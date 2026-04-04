@@ -12,8 +12,20 @@ const SUPABASE_KEY =
   process.env.SUPABASE_ANON_KEY ||
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRiYXhtdW9jdWVpcnBnemRqcGJ2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NDAyMzUsImV4cCI6MjA5MDQxNjIzNX0.eZa0h_5INfbKH4PrOzZyGx6WEwvZG-gLI5YZG8D09FM';
 
-const SUBSCRIPTION_DAYS = 5;
-const PLAN_AMOUNT = 50;
+const PLAN_WEEKLY = {
+  code: '5d',
+  amount: 50,
+  durationMs: 5 * 24 * 60 * 60 * 1000,
+  label: '5 Days',
+};
+const PLAN_HOURLY = {
+  code: '1h',
+  amount: 10,
+  durationMs: 60 * 60 * 1000,
+  label: '1 Hour',
+};
+const DEFAULT_PLAN = PLAN_WEEKLY;
+const PLAN_AMOUNT = DEFAULT_PLAN.amount;
 const DEFAULT_PHONE = 'NULL';
 const DEPOSIT_UTR_PLACEHOLDER = '00000000000';
 const PAYMENT_BASE_URL = 'https://chainfabric.blogspot.com/';
@@ -25,11 +37,44 @@ const CASHFREE_DEFAULT_PHONE = process.env.CASHFREE_DEFAULT_PHONE || '9999999999
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const addDays = (date, days) => {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
+const addMs = (date, ms) => new Date(new Date(date).getTime() + ms);
+const PLAN_CODE_ALIASES = {
+  '5d': PLAN_WEEKLY.code,
+  weekly: PLAN_WEEKLY.code,
+  '5days': PLAN_WEEKLY.code,
+  pro: PLAN_WEEKLY.code,
+  pro_5d: PLAN_WEEKLY.code,
+  '1h': PLAN_HOURLY.code,
+  hourly: PLAN_HOURLY.code,
+  quick: PLAN_HOURLY.code,
+  quick_1h: PLAN_HOURLY.code,
 };
+const PLAN_BY_CODE = {
+  [PLAN_WEEKLY.code]: PLAN_WEEKLY,
+  [PLAN_HOURLY.code]: PLAN_HOURLY,
+};
+const ALL_PLANS = [PLAN_WEEKLY, PLAN_HOURLY];
+
+const normalizePlanCode = (value) => {
+  const key = String(value || '').trim().toLowerCase();
+  if (!key) return null;
+  return PLAN_CODE_ALIASES[key] || null;
+};
+
+const resolvePlanFromAmount = (amount) => {
+  const parsed = Number(amount);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_PLAN;
+  const plan = ALL_PLANS.find((entry) => entry.amount === parsed);
+  return plan || DEFAULT_PLAN;
+};
+
+const resolvePlan = (planCode, amount) => {
+  const normalizedCode = normalizePlanCode(planCode);
+  if (normalizedCode && PLAN_BY_CODE[normalizedCode]) return PLAN_BY_CODE[normalizedCode];
+  return resolvePlanFromAmount(amount);
+};
+
+const getExpiryForPlan = (start, plan) => addMs(start, plan.durationMs);
 
 const parseSqlDateValue = (text) => {
   const m = String(text || '').match(
@@ -247,14 +292,15 @@ app.get('/check', async (req, res) => {
 
     if (deposit) {
       const createdAt = parseDateValue(deposit.created_at);
-      const fallbackExpiry = createdAt ? addDays(createdAt, SUBSCRIPTION_DAYS) : null;
+      const fallbackPlan = resolvePlan(null, Number(deposit.amount));
+      const fallbackExpiry = createdAt ? getExpiryForPlan(createdAt, fallbackPlan) : null;
       if (fallbackExpiry) lastKnownExpiry = fallbackExpiry;
 
       if (isFutureDate(fallbackExpiry)) {
         const { error: syncError } = await setSubscriptionSuccess(
           subscription.id,
           deposit.order_id,
-          Number(deposit.amount) || PLAN_AMOUNT,
+          Number(deposit.amount) || fallbackPlan.amount,
           fallbackExpiry.toISOString()
         );
 
@@ -292,14 +338,14 @@ app.get('/check', async (req, res) => {
 
 app.post('/payment/init', async (req, res) => {
   try {
-    const { device_id, amount, phone } = req.body || {};
+    const { device_id, amount, plan_code, phone } = req.body || {};
 
     if (!device_id || typeof device_id !== 'string') {
       return res.status(400).json({ success: false, error: 'device_id is required' });
     }
 
-    const parsedAmount = Number(amount);
-    const paymentAmount = Number.isFinite(parsedAmount) && parsedAmount > 0 ? parsedAmount : PLAN_AMOUNT;
+    const selectedPlan = resolvePlan(plan_code, amount);
+    const paymentAmount = selectedPlan.amount;
 
     const { subscription, error: subscriptionError } = await getOrCreateSubscriptionByDevice(device_id);
 
@@ -329,6 +375,7 @@ app.post('/payment/init', async (req, res) => {
       `${PAYMENT_BASE_URL}?username=${encodeURIComponent(device_id)}` +
       `&uuid=${encodeURIComponent(subscription.id)}` +
       `&amount=${encodeURIComponent(String(paymentAmount))}` +
+      `&plan_code=${encodeURIComponent(selectedPlan.code)}` +
       `&order_id=${encodeURIComponent(orderId)}` +
       `&phone=${encodeURIComponent(typeof phone === 'string' && phone.trim() ? phone.trim() : DEFAULT_PHONE)}` +
       '&type=activation';
@@ -339,6 +386,8 @@ app.post('/payment/init', async (req, res) => {
       order_id: orderId,
       subscription_uuid: subscription.id,
       amount: paymentAmount,
+      plan_code: selectedPlan.code,
+      plan_validity: selectedPlan.label,
     });
   } catch (err) {
     console.error('Unexpected /payment/init error:', err);
@@ -488,7 +537,7 @@ app.post('/payment/create-order', async (req, res) => {
 
 app.post('/activate', async (req, res) => {
   try {
-    const { device_id, order_id, amount } = req.body || {};
+    const { device_id, order_id, amount, plan_code } = req.body || {};
 
     if (!device_id || !order_id) {
       return res.status(400).json({ success: false, error: 'device_id and order_id are required' });
@@ -501,8 +550,9 @@ app.post('/activate', async (req, res) => {
       return res.status(500).json({ success: false });
     }
 
-    const expiry = addDays(new Date(), SUBSCRIPTION_DAYS).toISOString();
-    const resolvedAmount = Number.isFinite(Number(amount)) && Number(amount) > 0 ? Number(amount) : PLAN_AMOUNT;
+    const selectedPlan = resolvePlan(plan_code, amount);
+    const expiry = getExpiryForPlan(new Date(), selectedPlan).toISOString();
+    const resolvedAmount = selectedPlan.amount;
 
     const { error: activateError } = await setSubscriptionSuccess(
       subscription.id,
@@ -522,7 +572,12 @@ app.post('/activate', async (req, res) => {
       .eq('order_id', order_id)
       .eq('user_id', subscription.id);
 
-    return res.json({ success: true, subscription_uuid: subscription.id });
+    return res.json({
+      success: true,
+      subscription_uuid: subscription.id,
+      plan_code: selectedPlan.code,
+      plan_validity: selectedPlan.label,
+    });
   } catch (err) {
     console.error('Unexpected /activate error:', err);
     return res.status(500).json({ success: false });

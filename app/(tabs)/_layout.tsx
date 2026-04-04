@@ -14,12 +14,6 @@ export default function TabLayout() {
           title: 'ARB Bot',
         }}
       />
-      <Tabs.Screen
-        name="explore"
-        options={{
-          href: null,
-        }}
-      />
     </Tabs>
   );
 }

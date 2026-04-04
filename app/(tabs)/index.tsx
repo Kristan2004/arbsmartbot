@@ -28,6 +28,14 @@ type Banner = { message: string; tone: Tone };
 type LogEntry = { id: string; message: string; tone: Tone; time: string };
 type PriceStat = { count: number; success: number };
 type BotMsg = { type: string; payload?: Record<string, unknown> };
+type PlanCode = '5d' | '1h';
+type PlanOption = {
+  id: 'pro_5d' | 'quick_1h';
+  title: string;
+  price: number;
+  validity: string;
+  code: PlanCode;
+};
 type CheckPayload = Record<string, unknown> & {
   active?: unknown;
   subscription_uuid?: unknown;
@@ -46,8 +54,11 @@ type CheckPayload = Record<string, unknown> & {
 const BASE_URL = 'http://192.168.1.3:3000';
 const APP_SCHEME = 'myapp';
 const BUY_URL = 'https://arbpay.me/#/buy/arb';
-const DISPLAY_PLAN_AMOUNT = 50;
-const TEST_CHARGE_AMOUNT = 50;
+const PLAN_OPTIONS: PlanOption[] = [
+  { id: 'pro_5d', title: 'Pro Plan', price: 50, validity: '5 Days', code: '5d' },
+  { id: 'quick_1h', title: 'Quick Plan', price: 10, validity: '1 Hour', code: '1h' },
+];
+const DEFAULT_PLAN_ID: PlanOption['id'] = 'pro_5d';
 const DEFAULT_PHONE = 'NULL';
 const FIXED_MIN_PROFIT = 2;
 const PLAN_FEATURES = [
@@ -532,6 +543,7 @@ export default function Index() {
   const [deviceId, setDeviceId] = useState('');
   const [subscriptionUuid, setSubscriptionUuid] = useState('');
   const [subscriptionExpiryMs, setSubscriptionExpiryMs] = useState<number | null>(null);
+  const [selectedPlanId, setSelectedPlanId] = useState<PlanOption['id']>(DEFAULT_PLAN_ID);
   const [nowMs, setNowMs] = useState(Date.now());
   const [active, setActive] = useState(false);
   const [checking, setChecking] = useState(true);
@@ -586,6 +598,10 @@ export default function Index() {
   }, [maxPrice]);
 
   const successRate = useMemo(() => (stats.buyAttempts ? (stats.ordersBought / stats.buyAttempts) * 100 : 0), [stats.buyAttempts, stats.ordersBought]);
+  const selectedPlan = useMemo(
+    () => PLAN_OPTIONS.find((p) => p.id === selectedPlanId) ?? PLAN_OPTIONS[0],
+    [selectedPlanId],
+  );
   const remainingMs = useMemo(
     () => (subscriptionExpiryMs === null ? null : Math.max(subscriptionExpiryMs - nowMs, 0)),
     [nowMs, subscriptionExpiryMs],
@@ -843,7 +859,11 @@ export default function Index() {
       setDeviceId(id);
     }
     try {
-      const res = await axios.post(`${BASE_URL}/payment/init`, { device_id: id, amount: TEST_CHARGE_AMOUNT, phone: DEFAULT_PHONE }, { timeout: 7000 });
+      const res = await axios.post(
+        `${BASE_URL}/payment/init`,
+        { device_id: id, amount: selectedPlan.price, plan_code: selectedPlan.code, phone: DEFAULT_PHONE },
+        { timeout: 7000 },
+      );
       const url = res.data?.payment_url;
       if (!url || typeof url !== 'string') throw new Error('Missing payment URL');
       if (typeof res.data?.subscription_uuid === 'string') setSubscriptionUuid(res.data.subscription_uuid);
@@ -851,7 +871,7 @@ export default function Index() {
     } catch {
       Alert.alert('Payment Error', 'Unable to start payment right now.');
     }
-  }, [resolveDeviceId]);
+  }, [resolveDeviceId, selectedPlan.code, selectedPlan.price]);
 
   const handleDeepLink = useCallback(async (url: string) => {
     const parsed = Linking.parse(url);
@@ -946,9 +966,34 @@ export default function Index() {
       {!active ? (
         <View style={styles.planWrap}>
           <View style={styles.planCard}>
-            <Text style={styles.planTitle}>Subscription Plan</Text>
-            <Text style={styles.planPrice}>{'\u20B9'}{DISPLAY_PLAN_AMOUNT}</Text>
-            <Text style={styles.planValidity}>Valid for 5 Days</Text>
+            <Text style={styles.planTitle}>Subscription Plans</Text>
+            <View style={styles.planOptions}>
+              {PLAN_OPTIONS.map((plan) => {
+                const isActivePlan = plan.id === selectedPlanId;
+                return (
+                  <TouchableOpacity
+                    key={plan.id}
+                    style={[styles.planOption, isActivePlan && styles.planOptionActive]}
+                    activeOpacity={0.85}
+                    onPress={() => setSelectedPlanId(plan.id)}>
+                    <View style={styles.planOptionTop}>
+                      <Text style={[styles.planOptionPrice, isActivePlan && styles.planOptionPriceActive]}>
+                        {'\u20B9'}{plan.price}
+                      </Text>
+                      <Text style={[styles.planOptionValidity, isActivePlan && styles.planOptionValidityActive]}>
+                        {plan.validity}
+                      </Text>
+                    </View>
+                    <Text style={[styles.planOptionTitle, isActivePlan && styles.planOptionTitleActive]}>
+                      {plan.title}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            <Text style={styles.planValidity}>
+              Selected: {'\u20B9'}{selectedPlan.price} for {selectedPlan.validity}
+            </Text>
             <View style={styles.planList}>
               {PLAN_FEATURES.map((f) => (
                 <View key={f} style={styles.planItem}>
@@ -958,12 +1003,14 @@ export default function Index() {
               ))}
             </View>
             <TouchableOpacity style={styles.buyBtn} onPress={() => void buyNow()}>
-              <Text style={styles.buyBtnText}>Buy Now</Text>
+              <Text style={styles.buyBtnText}>Buy {selectedPlan.title}</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.recheckBtn} onPress={() => void checkSubscription('manual')} disabled={checking}>
               <Text style={styles.recheckText}>{checking ? 'Checking...' : 'I Paid, Recheck'}</Text>
             </TouchableOpacity>
-            <Text style={styles.meta}>Displayed: {'\u20B9'}{DISPLAY_PLAN_AMOUNT} | Charge: {'\u20B9'}{TEST_CHARGE_AMOUNT}</Text>
+            <Text style={styles.meta}>
+              Pricing: {'\u20B9'}50 / 5 Days or {'\u20B9'}10 / 1 Hour
+            </Text>
             <Text style={styles.meta}>Device ID: {deviceId || 'loading...'}</Text>
             <Text style={styles.meta}>Subscription UUID: {subscriptionUuid || 'creating...'}</Text>
           </View>
@@ -1101,7 +1148,16 @@ const styles = StyleSheet.create({
   planWrap: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
   planCard: { width: '100%', maxWidth: 440, backgroundColor: '#0f1110', borderRadius: 16, padding: 18, borderWidth: 1, borderColor: '#2a4c3a', alignItems: 'center' },
   planTitle: { color: '#f0fff5', fontSize: 25, fontWeight: '800' },
-  planPrice: { color: '#00ff99', fontSize: 40, fontWeight: '800', marginTop: 4 },
+  planOptions: { width: '100%', gap: 8, marginTop: 10, marginBottom: 10 },
+  planOption: { width: '100%', borderWidth: 1, borderColor: '#29513f', backgroundColor: '#111916', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 },
+  planOptionActive: { borderColor: '#00ff99', backgroundColor: '#0f2c22' },
+  planOptionTop: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 4 },
+  planOptionPrice: { color: '#dff6eb', fontSize: 24, fontWeight: '800' },
+  planOptionPriceActive: { color: '#00ff99' },
+  planOptionValidity: { color: '#9cb7ab', fontSize: 12, fontWeight: '700' },
+  planOptionValidityActive: { color: '#bfffe2' },
+  planOptionTitle: { color: '#c6ddd2', fontSize: 13, fontWeight: '600' },
+  planOptionTitleActive: { color: '#ecfff6' },
   planValidity: { color: '#b0c7bc', fontSize: 14, marginBottom: 12 },
   planList: { width: '100%', borderWidth: 1, borderColor: '#20382c', borderRadius: 12, backgroundColor: '#0b1210', padding: 10, marginBottom: 14, gap: 6 },
   planItem: { flexDirection: 'row', alignItems: 'flex-start', gap: 7 },
