@@ -51,7 +51,7 @@ type CheckPayload = Record<string, unknown> & {
   subscription?: Record<string, unknown>;
 };
 
-const BASE_URL = 'https://arbsmartbot.railway.internal';
+const BASE_URL = 'https://arbsmartbot-production.up.railway.app';
 const APP_SCHEME = 'myapp';
 const BUY_URL = 'https://arbpay.me/#/buy/arb';
 const PLAN_OPTIONS: PlanOption[] = [
