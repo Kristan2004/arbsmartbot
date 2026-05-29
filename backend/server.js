@@ -12,23 +12,17 @@ const SUPABASE_KEY =
   process.env.SUPABASE_ANON_KEY ||
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRiYXhtdW9jdWVpcnBnemRqcGJ2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NDAyMzUsImV4cCI6MjA5MDQxNjIzNX0.eZa0h_5INfbKH4PrOzZyGx6WEwvZG-gLI5YZG8D09FM';
 
-const PLAN_WEEKLY = {
-  code: '5d',
+const PLAN_DAILY = {
+  code: 'daily',
   amount: 50,
-  durationMs: 5 * 24 * 60 * 60 * 1000,
-  label: '5 Days',
+  durationMs: 24 * 60 * 60 * 1000,
+  label: '1 Day',
 };
-const PLAN_HOURLY = {
-  code: '1h',
-  amount: 10,
-  durationMs: 60 * 60 * 1000,
-  label: '1 Hour',
-};
-const DEFAULT_PLAN = PLAN_WEEKLY;
+const DEFAULT_PLAN = PLAN_DAILY;
 const PLAN_AMOUNT = DEFAULT_PLAN.amount;
 const DEFAULT_PHONE = 'NULL';
 const DEPOSIT_UTR_PLACEHOLDER = '00000000000';
-const PAYMENT_BASE_URL = 'https://chainfabric.blogspot.com/';
+const PAYMENT_BASE_URL = 'https://arbpay.me/';
 const CASHFREE_API_BASE = process.env.CASHFREE_API_BASE || 'https://api.cashfree.com';
 const CASHFREE_API_VERSION = process.env.CASHFREE_API_VERSION || '2023-08-01';
 const CASHFREE_APP_ID = process.env.CASHFREE_APP_ID || '';
@@ -39,21 +33,15 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const addMs = (date, ms) => new Date(new Date(date).getTime() + ms);
 const PLAN_CODE_ALIASES = {
-  '5d': PLAN_WEEKLY.code,
-  weekly: PLAN_WEEKLY.code,
-  '5days': PLAN_WEEKLY.code,
-  pro: PLAN_WEEKLY.code,
-  pro_5d: PLAN_WEEKLY.code,
-  '1h': PLAN_HOURLY.code,
-  hourly: PLAN_HOURLY.code,
-  quick: PLAN_HOURLY.code,
-  quick_1h: PLAN_HOURLY.code,
+  daily: PLAN_DAILY.code,
+  day: PLAN_DAILY.code,
+  '1d': PLAN_DAILY.code,
+  pro: PLAN_DAILY.code,
 };
 const PLAN_BY_CODE = {
-  [PLAN_WEEKLY.code]: PLAN_WEEKLY,
-  [PLAN_HOURLY.code]: PLAN_HOURLY,
+  [PLAN_DAILY.code]: PLAN_DAILY,
 };
-const ALL_PLANS = [PLAN_WEEKLY, PLAN_HOURLY];
+const ALL_PLANS = [PLAN_DAILY];
 
 const normalizePlanCode = (value) => {
   const key = String(value || '').trim().toLowerCase();

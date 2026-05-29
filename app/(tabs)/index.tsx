@@ -1,12 +1,11 @@
-
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Animated,
-  BackHandler,
   Easing,
   Platform,
+  Vibration,
   ScrollView,
   StyleSheet,
   Switch,
@@ -16,1207 +15,1181 @@ import {
   View,
 } from 'react-native';
 import * as Application from 'expo-application';
+import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
 import * as Linking from 'expo-linking';
 import axios from 'axios';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
 type Tone = 'neutral' | 'success' | 'danger';
-type SpeedPreset = '50' | '100' | '200' | 'custom';
-type Banner = { message: string; tone: Tone };
-type LogEntry = { id: string; message: string; tone: Tone; time: string };
-type PriceStat = { count: number; success: number };
-type BotMsg = { type: string; payload?: Record<string, unknown> };
-type PlanCode = '5d' | '1h';
-type PlanOption = {
-  id: 'pro_5d' | 'quick_1h';
-  title: string;
+
+type Banner = {
+  message: string;
+  tone: Tone;
+};
+
+type LogEntry = {
+  id: string;
+  message: string;
+  tone: Tone;
+  time: string;
+};
+
+type PriceStat = {
+  count: number;
+  success: number;
+};
+
+type BotStats = {
+  ordersDetected: number;
+  buyAttempts: number;
+  ordersBought: number;
+  estimatedProfit: number;
+};
+
+type BotSettings = {
+  minPrice: number;
+  maxPrice: number;
+  minProfit: number;
+  refreshSpeed: number;
+};
+
+type OrderCandidate = {
   price: number;
-  validity: string;
-  code: PlanCode;
-};
-type CheckPayload = Record<string, unknown> & {
-  active?: unknown;
-  subscription_uuid?: unknown;
-  expiry_raw?: unknown;
-  expiry?: unknown;
-  expires_at?: unknown;
-  expiry_at?: unknown;
-  valid_till?: unknown;
-  subscription_expiry?: unknown;
-  remaining_seconds?: unknown;
-  ttl_seconds?: unknown;
-  expiry_seconds?: unknown;
-  subscription?: Record<string, unknown>;
+  reward: number;
+  profitPercent: number;
 };
 
-const BASE_URL = 'https://arbsmartbot.onrender.com';
+const BASE_URL = 'https://arbpay.me';
 const APP_SCHEME = 'myapp';
-const BUY_URL = 'https://arbpay.me/#/buy/arb';
-const PLAN_OPTIONS: PlanOption[] = [
-  { id: 'pro_5d', title: 'Pro Plan', price: 50, validity: '5 Days', code: '5d' },
-  { id: 'quick_1h', title: 'Quick Plan', price: 10, validity: '1 Hour', code: '1h' },
-];
-const DEFAULT_PLAN_ID: PlanOption['id'] = 'pro_5d';
-const DEFAULT_PHONE = 'NULL';
-const FIXED_MIN_PROFIT = 2;
-const PLAN_FEATURES = [
-  'Live arbpay buy-page automation',
-  'High-speed scanner (50ms to 500ms)',
-  'Smart adaptive filtering by win rate',
-  'Safe mode with randomized human-like delays',
-  'Device-based access, no login required',
-];
+const PLAN_AMOUNT = 50;
+const PLAN_CODE = 'daily';
+const PRICE_BUCKET_SIZE = 50;
+const MIN_REFRESH_SPEED = 50;
+const MAX_REFRESH_SPEED = 500;
+const BUY_COOLDOWN_MS = 1200;
+const ALERT_TONE_URI =
+  'data:audio/wav;base64,UklGRmQLAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YUALAAAAABEAPABpAHoAWwAHAI7/FP/G/sn+Lf/m/8gAlAEKAvkBVQE7AO/+y/0o/T/9Hv6X/04BzQKlA4wDeQKkAIL+pPyS+6T75/wV/6IB4gMzBS4FwgM/AUf+ovsL+v35jPtg/sIB0ASyBtoGLgUNAkH+yfqX+E34Efp7/a8BkwUaCIsIuAYKA2/+Hfo795z2evhn/GYBKAZoCTwKWwg0BNP+n/n89e70y/Yn++cAjQaXCucLFAqJBWv/U/nf9EfzCfW9+TUAwAaiC4cN3gsGBzgAOvnm86/xOfMv+E7/vwaHDBcPsg2mCDgBVvkX8yjwYfF+9jb+hwZADZIQjQ9mCmkCqPl08rruhO+v9O38GgbMDfMRaRFCDMkDMfoB8mjtqu3H8nb7dgUmDjUTQRM1DlYF8frA8Tbs1+vL8NT5mwRNDlQUDxU6EAwH5vu08SrrEOq+7gr4iwM+DkwVzhZNEukIEf3e8UjqWuim7Bv2RgL4DRkWeBhoFOkKb/5A8pLpu+aJ6gz0zgB6DbYWChqGFgcNAADa8g3pOOVs6ODxJv/DDCIXfRuhGD4PwAGt87zo1uNT5p3vT/3UC1kXzhy1GowRrQO69KDomOJG5EftTPurClkX+B28HOkTxAX+9b3ohOFI4uTqIvlLCSAX9R6wHlIWAQh69xPpneBf4Hfo0/a0B6wWxB+MIMEYYQor+aTp59+Q3gfmZPTpBf0VYCBMIjAb3gwP+3HqZt/h3Jrj2vHsAxIVxiDpI5oddA8l/XrrHN9W2zThOe+/AewT9CBgJfofHxJo/77sC9/02dvehuxm/4oS5iCtJkoi2RTWAT3uN9+/2JXcxunk/O0QnSDKJ4UknRdsBPbvoN+712fa/+Y9+hgPFSC0KKUmZhojB+fxR+Ds1lfYNuR19wwNTh9nKaUoLh35CQ30LeFU1mjWcOGS9MwKSB7hKYAq7x/pDGf2UuL41aHUtd6X8VoIAx0fKjIspCLtD/D4tuPZ1QbTCNyL7rsFgBsfKrYtSCUAE6X7WOX51ZvRb9ly6/ACwBneKQcv1CcdFoP+N+da1mTQ8dZS6AAAxBdcKSIwQyo+GYUBUOn91mbPktQx5e78jhWYKAQxkCxeHKcEoevj16LOV9IU4r75IhOSJ6kxty53H+IHKO4K2RzORtAC33f2ghBJJg4ysTCCIjQL4fB02tfNZM7/2x3zsQ2/JDMyezJ7JZUOyPMe3NTNs8wR2bbvtAr1IhQyEDRcKAES2vYI3hXOOss/1kfsjwfsILAxbTUfK3EVEfov4JvO+smwwnIbE5ckB0DyrIO00bknDtEDdnGxflNUVep5uQJpY2ZS3LKzH6PeEf01L4Of8THtIxxZETujKywvJjE0HygP3eRg1gzVIt/O8L4NnBwRMC8G17wEoxuIVcu4a5fzYCNK86Y3sWEIiYQGC/IAC3L4Q9yMEjdnU0JfOe9RT8TgMXdxcwDBL6EwUxCScHngDL+eIf3D/D6cUOwC7+RAYYCkcB1vnvPxTdZNcI1e/tfQOf/xYPIxJyEJgED//bKsko3ITgA/zg1e02BDEekxepECYSPQ4L94HfYtJ02YHxiBEPEA8QPBbP9al54L7p//4Kjn0VMynCEAkWKB4iEI/85+Qs6OTpKOTx2APeHwSMCM1UUwC39P76Xw6v9nGNKc9VaSMB5+/fgW6jy+Ols1dLea/nNC7wuBwfJZwoGCoP5Oq0z9jR/lU8X3ypPh/7zH+yiy7AZkdgzWDNvp4co/3iPTUCwmdHKYOUBDUBMz4xTIOvyFQ7FjpovB57JD+ro/EP8oWCNYJsw4gFI4L5wPb8QfkBQgMSwzKFN8QShYZD5P+/OzP7U/ycPrv/AQcEiQVyBvZCM4J2At/+0/oN+9/40PsF/HoBMAWrB0IIPwbuASb+HPwy+9f62/06/1UBcAW0B58H1Qf+Aen+KPiP+lL1dvwO/qMBfASLCOwJfwnKAO7+gfUJ/CnzDfbQ+esA3wYbCwoMCQsuBvn5o++j7q7pwO6C+WkEUQ16DMkPMgwzAiD5W/Tn65TrQuuq+AsDfg2sEa8SghOuCAYBRfpm89buSu0X85D9jQZ3D3oXSBojF+sKSP6c9y3rCOuC7E32igMlDzASjRP4DGYGxvvk8pHrQ+qj7Wf3XQKgCx4U5hbkERwIrP2Q8AnpWejy7Hz3UQTjDZUV8hfGE1kEZfwC8evqkuoj7F72bwLlDO8VPhl8GDUK8v1Z82LpXOV86hj1nADxDacWkRq4FFgAmPsD7r7pMeaC67z0NwCUDVsZqhh4EnYF5fu286rkv9UH1nLug/eqAUwTxh1CH9UMOfgP7o/gHONu6mb6qwpgFk8YahpAEo8I1P3Z8+3gP+Dg6Iz1zf+XDA0XtBuaG9IQXQkn+zTzHOfb4TDylAB1DNMXExd5E3wKbf2M86DcEeSf7Zn4TwUyFeUWVxc7EOIHXvsQ8vvnHeqw6zX0QQGkDBAU0xT3D80H+vgZ8Rnur+kE6WX3FwY9D5YTEAqQBEH1xe4d7gjlVe4C83v0lgBuC4QQjRT/DdEFP/oW8hvrIe3o7cT+iwLYCR0UPxP0C3gC+PfZ7nXqS+rd8qMFfQnCEZ4U9QyvA0D9TfJV6g7orO8u9OMByQvYEcMSbBAvBSYBLvZY8T3vsPIQ9pr/FwdkDmYRLQ+HC4EDnPh+79Hv1+/wfvXP/QQCDjMMew8gCVsByPiF8j7w+/JH9Tf9vATRC0MOYQ0TCcoCAf2e91jzCvMQ+DL9fQSaB8sKVAyUCWMDL/6t+Tn2vPfq+LX9sgKSB0YMfAt0Ba4Cu/9h/U/7ff1Q/6/+SQMAAZUE5wU5BMYBwf4I/Lb95f5n/pwBzQL9A+MDCgL8/1T8Zf0J/i3/aP87AVECSwJRAXYAUf/h/gD+Sf6W/2IAFwEbAfQA1wD2/5D+9f8=';
 
-const BOT_SCRIPT = `
-(function () {
-  if (window.__ARB_BOT__) {
-    try { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'ready' })); } catch (e) {}
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+const toNumber = (value: string, fallback: number) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const randomInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+const getBucketStart = (price: number) => Math.floor(price / PRICE_BUCKET_SIZE) * PRICE_BUCKET_SIZE;
+
+const formatBucketLabel = (bucketStart: number) =>
+  `\u20B9${bucketStart} - \u20B9${bucketStart + PRICE_BUCKET_SIZE - 1}`;
+
+const formatTimestamp = () =>
+  new Date().toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+
+const playWebBeep = (tone: Tone) => {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') {
     return;
   }
 
-  const state = {
-    run: false,
-    timer: null,
-    lock: false,
-    lastBuyTs: 0,
-    lastFlipTs: 0,
-    lastHeartbeatTs: 0,
-    lastSkipTs: 0,
-    learn: {},
-    cfg: {
-      minPrice: 100,
-      maxPrice: 10000,
-      minProfit: 2,
-      speedMs: 120,
-      smartMode: true,
-      safeMode: false,
-      cooldownMs: 700,
-    },
+  const AudioContextCtor =
+    window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+
+  if (!AudioContextCtor) {
+    return;
+  }
+
+  const audioContext = new AudioContextCtor();
+  const oscillator = audioContext.createOscillator();
+  const gain = audioContext.createGain();
+
+  oscillator.type = tone === 'danger' ? 'sawtooth' : 'sine';
+  oscillator.frequency.value = tone === 'success' ? 880 : tone === 'danger' ? 220 : 520;
+  gain.gain.setValueAtTime(0.001, audioContext.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.12, audioContext.currentTime + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.18);
+
+  oscillator.connect(gain);
+  gain.connect(audioContext.destination);
+  oscillator.start();
+  oscillator.stop(audioContext.currentTime + 0.2);
+  oscillator.onended = () => {
+    void audioContext.close();
   };
-
-  const post = (type, payload) => {
-    try {
-      if (window.ReactNativeWebView) {
-        window.ReactNativeWebView.postMessage(JSON.stringify({ type, payload: payload || {} }));
-      }
-    } catch (e) {}
-  };
-
-  const toNum = (value, fallback) => {
-    const cleaned = String(value ?? '').replace(/[^0-9.]/g, '');
-    const n = Number(cleaned.length ? cleaned : value);
-    return Number.isFinite(n) ? n : fallback;
-  };
-
-  const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
-  const bucketOf = (price) => Math.floor(price / 50) * 50;
-
-  const isVisible = (el) =>
-    !!el && !el.disabled && (typeof el.offsetParent === 'undefined' || el.offsetParent !== null);
-
-  const normalize = (cfg) => {
-    const out = Object.assign({}, state.cfg, cfg || {});
-    out.minPrice = Math.max(0, toNum(out.minPrice, 100));
-    out.maxPrice = Math.max(0, toNum(out.maxPrice, 10000));
-    out.minProfit = 2;
-    out.speedMs = clamp(toNum(out.speedMs, 120), 50, 500);
-    out.cooldownMs = clamp(toNum(out.cooldownMs, 700), 300, 3000);
-    out.smartMode = !!out.smartMode;
-    out.safeMode = !!out.safeMode;
-    return out;
-  };
-
-  const parseNumbers = (text) => {
-    const out = [];
-    const regex = /(?:\\u20B9|rs\\\\.?|inr)?\\\\s*([0-9]+(?:\\\\.[0-9]+)?)/gi;
-    let match;
-    while ((match = regex.exec(String(text || ''))) !== null) {
-      const n = Number(match[1]);
-      if (Number.isFinite(n) && n > 0) out.push(n);
-    }
-    return out;
-  };
-
-  const parseCard = (el) => {
-    if (!el) return null;
-    const text = String(el.innerText || el.textContent || '');
-    const priceMatch = text.match(/\\u20B9\\s*([0-9]+(?:\\.[0-9]+)?)/i);
-    const rewardMatch = text.match(/reward\\s*\\+?\\s*([0-9]+(?:\\.[0-9]+)?)/i);
-    let price = priceMatch ? Number(priceMatch[1]) : NaN;
-    let reward = rewardMatch ? Number(rewardMatch[1]) : NaN;
-
-    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(reward) || reward <= 0) {
-      const values = parseNumbers(text);
-      if (values.length < 2) return null;
-      if (!Number.isFinite(price) || price <= 0) {
-        price = Math.max(...values);
-      }
-      if (!Number.isFinite(reward) || reward <= 0) {
-        reward = Math.min(...values);
-      }
-    }
-    if (!Number.isFinite(price) || !Number.isFinite(reward) || price <= 0 || reward <= 0) return null;
-    return { price, reward, profitPct: (reward / price) * 100 };
-  };
-
-  const fireClick = (el) => {
-    if (!el) return false;
-    try {
-      if (typeof el.scrollIntoView === 'function') {
-        el.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' });
-      }
-      const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
-      const x = rect ? rect.left + rect.width / 2 + rand(-2, 2) : 8;
-      const y = rect ? rect.top + rect.height / 2 + rand(-2, 2) : 8;
-      ['pointerdown', 'touchstart', 'mouseover', 'mousedown', 'mouseup', 'touchend', 'pointerup', 'click'].forEach((eventName) => {
-        try {
-          if (eventName.startsWith('touch')) {
-            el.dispatchEvent(new Event(eventName, { bubbles: true, cancelable: true }));
-            return;
-          }
-          if (eventName.startsWith('pointer') && typeof PointerEvent === 'function') {
-            el.dispatchEvent(new PointerEvent(eventName, { bubbles: true, cancelable: true, clientX: x, clientY: y }));
-            return;
-          }
-          el.dispatchEvent(new MouseEvent(eventName, { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y }));
-        } catch (e) {}
-      });
-      if (typeof el.click === 'function') el.click();
-      return true;
-    } catch (e) {
-      return false;
-    }
-  };
-
-  const findTabs = () =>
-    Array.from(document.querySelectorAll('button,[role="tab"],a,div,span')).filter((el) => {
-      if (!isVisible(el)) return false;
-      const t = String(el.innerText || el.textContent || '').trim().toLowerCase();
-      return t === 'default' || t === 'large';
-    });
-
-  const maybeFlipTabs = () => {
-    const now = Date.now();
-    if (now - state.lastFlipTs < 220) return;
-    const tabs = findTabs();
-    if (!tabs.length) return;
-    state.lastFlipTs = now;
-    const target = Math.floor(now / 220) % 2 === 0 ? 'default' : 'large';
-    for (let i = 0; i < tabs.length; i += 1) {
-      const t = String(tabs[i].innerText || tabs[i].textContent || '').trim().toLowerCase();
-      if (t === target) {
-        fireClick(tabs[i]);
-        return;
-      }
-    }
-    fireClick(tabs[0]);
-  };
-
-  const isBuyLabel = (text) => {
-    const t = String(text || '').trim().toLowerCase();
-    return t === 'buy' || t.includes('buy now') || t.startsWith('buy');
-  };
-
-  const buyCountIn = (node) =>
-    Array.from(node.querySelectorAll('button,[role="button"],a,div[role="button"]')).filter((el) =>
-      isBuyLabel(el.innerText || el.textContent || ''),
-    ).length;
-
-  const findOrderCard = (btn) => {
-    let node = btn;
-    for (let depth = 0; depth < 7 && node; depth += 1) {
-      const text = String(node.innerText || node.textContent || '').toLowerCase();
-      if (text.includes('reward') && (text.includes('\u20B9') || text.includes('inr') || text.includes('rs')) && buyCountIn(node) === 1) {
-        return node;
-      }
-      node = node.parentElement;
-    }
-    return btn.closest('article') || btn.closest('li') || btn.closest('section') || btn.closest('div') || btn;
-  };
-
-  const findBuyButtons = () =>
-    Array.from(document.querySelectorAll('button,[role="button"],a,div[role="button"]')).filter((el) => {
-      if (!isVisible(el)) return false;
-      return isBuyLabel(el.innerText || el.textContent || '');
-    });
-
-  const closeEnough = (a, b) => Math.abs(a - b) <= 0.01;
-  const sameOrder = (left, right) =>
-    !!left && !!right && closeEnough(left.price, right.price) && closeEnough(left.reward, right.reward);
-
-  const resolveTargetButton = (candidate, preferredBtn) => {
-    const probe = (button) => {
-      if (!button) return null;
-      const card = findOrderCard(button);
-      const parsed = parseCard(card || button);
-      return sameOrder(candidate, parsed) ? button : null;
-    };
-    const direct = probe(preferredBtn);
-    if (direct) return direct;
-    const buttons = findBuyButtons();
-    for (let i = 0; i < buttons.length; i += 1) {
-      const hit = probe(buttons[i]);
-      if (hit) return hit;
-    }
-    return null;
-  };
-
-  const rateOf = (price) => {
-    const row = state.learn[bucketOf(price)];
-    if (!row || !row.count) return null;
-    return (row.success / row.count) * 100;
-  };
-
-  const updateLearn = (price, success) => {
-    const bucket = bucketOf(price);
-    if (!state.learn[bucket]) state.learn[bucket] = { count: 0, success: 0 };
-    state.learn[bucket].count += 1;
-    if (success) state.learn[bucket].success += 1;
-  };
-
-  const bestBucket = () => {
-    const keys = Object.keys(state.learn);
-    if (!keys.length) return null;
-    let winBucket = null;
-    let winRate = -1;
-    let winCount = -1;
-    for (let i = 0; i < keys.length; i += 1) {
-      const row = state.learn[keys[i]];
-      if (!row || !row.count) continue;
-      const r = (row.success / row.count) * 100;
-      if (r > winRate || (r === winRate && row.count > winCount)) {
-        winBucket = Number(keys[i]);
-        winRate = r;
-        winCount = row.count;
-      }
-    }
-    return winBucket;
-  };
-
-  const reportSkip = (reason, price) => {
-    const now = Date.now();
-    if (now - state.lastSkipTs < 1400) return;
-    state.lastSkipTs = now;
-    post('skipped', { reason, price });
-  };
-
-  const evaluate = async (candidate, btn) => {
-    const cfg = state.cfg;
-    if (candidate.price < cfg.minPrice || candidate.price > cfg.maxPrice) {
-      return;
-    }
-    if (candidate.profitPct < cfg.minProfit) {
-      return;
-    }
-    if (cfg.smartMode) {
-      const rate = rateOf(candidate.price);
-      if (rate !== null && rate < 30) {
-        reportSkip('smart-low-success', candidate.price);
-        return;
-      }
-    }
-    if (state.lock) {
-      reportSkip('buy-lock', candidate.price);
-      return;
-    }
-    if (Date.now() - state.lastBuyTs < cfg.cooldownMs) {
-      reportSkip('cooldown', candidate.price);
-      return;
-    }
-
-    state.lock = true;
-    try {
-      state.lastFlipTs = Date.now() + 450;
-      let targetBtn = resolveTargetButton(candidate, btn);
-      if (!targetBtn) {
-        reportSkip('order-shifted', candidate.price);
-        return;
-      }
-      if (cfg.safeMode) await sleep(rand(50, 300));
-      await sleep(rand(10, 24));
-
-      targetBtn = resolveTargetButton(candidate, targetBtn) || resolveTargetButton(candidate, btn);
-      if (!targetBtn) {
-        reportSkip('order-shifted', candidate.price);
-        return;
-      }
-
-      let ok = fireClick(targetBtn);
-      if (!ok && targetBtn && typeof targetBtn.querySelector === 'function') {
-        const inner = targetBtn.querySelector('button,[role="button"],a,div[role="button"]');
-        if (inner) ok = fireClick(inner);
-      }
-      state.lastBuyTs = Date.now();
-      updateLearn(candidate.price, ok);
-      post(ok ? 'bought' : 'buyFailed', {
-        price: candidate.price,
-        reward: candidate.reward,
-        profitPct: candidate.profitPct,
-        bestBucket: bestBucket(),
-      });
-    } catch (err) {
-      updateLearn(candidate.price, false);
-      post('buyFailed', { price: candidate.price, error: String(err) });
-    } finally {
-      state.lock = false;
-    }
-  };
-
-  const tick = async () => {
-    if (!state.run) return;
-    let scanned = 0;
-    let eligible = 0;
-    try {
-      maybeFlipTabs();
-      const buttons = findBuyButtons();
-      for (let i = 0; i < buttons.length; i += 1) {
-        if (!state.run) break;
-        const btn = buttons[i];
-        const card = findOrderCard(btn);
-        const candidate = parseCard(card || btn);
-        if (!candidate) continue;
-        scanned += 1;
-        const inRange = candidate.price >= state.cfg.minPrice && candidate.price <= state.cfg.maxPrice;
-        const profitable = candidate.profitPct >= state.cfg.minProfit;
-        if (!inRange || !profitable) continue;
-        eligible += 1;
-        post('detected', { price: candidate.price, reward: candidate.reward, profitPct: candidate.profitPct });
-        await evaluate(candidate, btn);
-        if (scanned >= 8) break;
-      }
-      const now = Date.now();
-      if (now - state.lastHeartbeatTs > 750) {
-        state.lastHeartbeatTs = now;
-        post('heartbeat', { bestBucket: bestBucket(), scanned, eligible });
-      }
-    } catch (err) {
-      post('engineError', { message: String(err && err.message ? err.message : err) });
-    } finally {
-      if (state.run) state.timer = setTimeout(tick, state.cfg.speedMs);
-    }
-  };
-
-  window.__ARB_BOT__ = {
-    start: (cfg) => {
-      state.cfg = normalize(cfg || {});
-      if (state.run) {
-        post('running', { running: true });
-        return;
-      }
-      state.run = true;
-      post('running', { running: true, cfg: state.cfg });
-      tick();
-    },
-    stop: () => {
-      state.run = false;
-      if (state.timer) {
-        clearTimeout(state.timer);
-        state.timer = null;
-      }
-      state.lock = false;
-      post('running', { running: false });
-    },
-    updateConfig: (cfg) => {
-      state.cfg = normalize(cfg || {});
-      post('config', { cfg: state.cfg });
-    },
-    ping: () => post('ready', { href: window.location.href }),
-  };
-
-  post('ready', { href: window.location.href });
-})();
-true;`;
-
-const fmtTime = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max);
-const num = (v: string, d: number) => {
-  const cleaned = String(v ?? '').replace(/[^0-9.]/g, '');
-  const n = Number(cleaned.length ? cleaned : v);
-  return Number.isFinite(n) ? n : d;
 };
-const onlyDigits = (v: string) => String(v ?? '').replace(/[^0-9]/g, '');
-const pad2 = (n: number) => String(n).padStart(2, '0');
-const parseSqlDateToEpoch = (text: string): number | null => {
-  const m = text.match(
-    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(?:\s*(Z|[+-]\d{2}:?\d{2}|[+-]\d{2}))?$/,
-  );
-  if (!m) return null;
 
-  const year = Number(m[1]);
-  const month = Number(m[2]) - 1;
-  const day = Number(m[3]);
-  const hour = Number(m[4]);
-  const minute = Number(m[5]);
-  const second = Number(m[6]);
-  const msRaw = (m[7] ?? '').padEnd(3, '0').slice(0, 3);
-  const millis = Number(msRaw || 0);
-  const tz = m[8];
-
-  if (!tz) {
-    const local = new Date(year, month, day, hour, minute, second, millis).getTime();
-    return Number.isFinite(local) ? local : null;
+const playNativeBeep = async () => {
+  if (Platform.OS === 'web') {
+    return;
   }
 
-  if (tz.toUpperCase() === 'Z') {
-    return Date.UTC(year, month, day, hour, minute, second, millis);
-  }
-
-  const sign = tz.startsWith('-') ? -1 : 1;
-  const body = tz.slice(1).replace(':', '');
-  const tzHour = Number(body.slice(0, 2) || '0');
-  const tzMinute = Number(body.slice(2, 4) || '0');
-  const offsetMs = (tzHour * 60 + tzMinute) * 60 * 1000;
-  return Date.UTC(year, month, day, hour, minute, second, millis) - sign * offsetMs;
-};
-const toEpochMs = (value: unknown): number | null => {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    if (value > 1e12) return value;
-    if (value > 1e9) return value * 1000;
-    return null;
-  }
-  if (typeof value === 'string') {
-    const text = value.trim();
-    if (!text) return null;
-    const asNum = Number(text);
-    if (Number.isFinite(asNum)) return toEpochMs(asNum);
-    const normalized = text.includes('T') ? text : text.replace(' ', 'T');
-    const parsed = Date.parse(normalized);
-    if (Number.isFinite(parsed)) return parsed;
-    const strict = parseSqlDateToEpoch(text);
-    if (strict !== null) return strict;
-  }
-  return null;
-};
-const parseExpiryMs = (payload: CheckPayload): number | null => {
-  const sub = (payload.subscription ?? {}) as Record<string, unknown>;
-  const direct = [
-    payload.expiry_raw,
-    payload.expiry,
-    payload.expires_at,
-    payload.expiry_at,
-    payload.valid_till,
-    payload.subscription_expiry,
-    sub.expiry,
-    sub.expires_at,
-    sub.expiry_at,
-    sub.valid_till,
-  ];
-  for (let i = 0; i < direct.length; i += 1) {
-    const ms = toEpochMs(direct[i]);
-    if (ms !== null) return ms;
-  }
-  const ttl = [payload.remaining_seconds, payload.ttl_seconds, payload.expiry_seconds, sub.remaining_seconds, sub.ttl_seconds];
-  for (let i = 0; i < ttl.length; i += 1) {
-    const secs = Number(ttl[i]);
-    if (Number.isFinite(secs) && secs >= 0) return Date.now() + Math.max(0, secs) * 1000;
-  }
-  return null;
-};
-const formatRemaining = (ms: number | null) => {
-  if (ms === null) return 'Unknown';
-  if (ms <= 0) return 'Expired';
-  const total = Math.floor(ms / 1000);
-  const d = Math.floor(total / 86400);
-  const h = Math.floor((total % 86400) / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  if (d > 0) return `${d}d ${pad2(h)}:${pad2(m)}:${pad2(s)}`;
-  return `${pad2(h)}:${pad2(m)}:${pad2(s)}`;
+  const { sound } = await Audio.Sound.createAsync({ uri: ALERT_TONE_URI }, { shouldPlay: true, volume: 1 });
+  sound.setOnPlaybackStatusUpdate((status) => {
+    if (status.isLoaded && status.didJustFinish) {
+      void sound.unloadAsync();
+    }
+  });
 };
 
 export default function Index() {
-  const insets = useSafeAreaInsets();
-  const webRef = useRef<WebView>(null);
-  const deviceRef = useRef('');
-  const learningRef = useRef<Record<number, PriceStat>>({});
-  const soundRef = useRef(false);
-  const bannerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastBackPressRef = useRef(0);
-  const expirySyncRef = useRef(false);
-  const expiryMsRef = useRef<number | null>(null);
-  const subscriptionUuidRef = useRef('');
-
   const [deviceId, setDeviceId] = useState('');
-  const [subscriptionUuid, setSubscriptionUuid] = useState('');
-  const [subscriptionExpiryMs, setSubscriptionExpiryMs] = useState<number | null>(null);
-  const [selectedPlanId, setSelectedPlanId] = useState<PlanOption['id']>(DEFAULT_PLAN_ID);
-  const [nowMs, setNowMs] = useState(Date.now());
-  const [active, setActive] = useState(false);
-  const [checking, setChecking] = useState(true);
-  const [checkedOnce, setCheckedOnce] = useState(false);
-  const [webReady, setWebReady] = useState(false);
-  const [webCanGoBack, setWebCanGoBack] = useState(false);
-  const [webUrl, setWebUrl] = useState(BUY_URL);
-  const [running, setRunning] = useState(false);
-  const [logsOpen, setLogsOpen] = useState(false);
-  const [headerMinimized, setHeaderMinimized] = useState(false);
+  const [subscriptionActive, setSubscriptionActive] = useState(false);
+  const [checkingSubscription, setCheckingSubscription] = useState(true);
+  const [hasCheckedOnce, setHasCheckedOnce] = useState(false);
 
-  const [minPrice, setMinPrice] = useState('100');
-  const [maxPrice, setMaxPrice] = useState('10000');
-  const [speedPreset, setSpeedPreset] = useState<SpeedPreset>('200');
-  const [customSpeed, setCustomSpeed] = useState('200');
-  const [smart, setSmart] = useState(true);
-  const [safe, setSafe] = useState(false);
-  const [sound, setSound] = useState(false);
+  const [minPriceInput, setMinPriceInput] = useState('100');
+  const [maxPriceInput, setMaxPriceInput] = useState('1500');
+  const [minProfitInput, setMinProfitInput] = useState('12');
+  const [refreshSpeedInput, setRefreshSpeedInput] = useState('120');
 
-  const [stats, setStats] = useState({ ordersDetected: 0, buyAttempts: 0, ordersBought: 0, estimatedProfit: 0 });
-  const [bestRange, setBestRange] = useState('N/A');
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [smartMode, setSmartMode] = useState(true);
+  const [safeMode, setSafeMode] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(false);
+  const [botRunning, setBotRunning] = useState(false);
+
+  const [stats, setStats] = useState<BotStats>({
+    ordersDetected: 0,
+    buyAttempts: 0,
+    ordersBought: 0,
+    estimatedProfit: 0,
+  });
+  const [bestPerformingPrice, setBestPerformingPrice] = useState('N/A');
+  const [logItems, setLogItems] = useState<LogEntry[]>([]);
   const [banner, setBanner] = useState<Banner | null>(null);
-  const minPriceRef = useRef('100');
-  const maxPriceRef = useRef('10000');
 
   const bannerOpacity = useRef(new Animated.Value(0)).current;
-  const bannerY = useRef(new Animated.Value(-10)).current;
+  const bannerTranslateY = useRef(new Animated.Value(-10)).current;
+  const bannerTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const smartModeRef = useRef(smartMode);
+  const safeModeRef = useRef(safeMode);
+  const soundEnabledRef = useRef(soundEnabled);
+
+  const settingsRef = useRef<BotSettings>({
+    minPrice: 100,
+    maxPrice: 1500,
+    minProfit: 12,
+    refreshSpeed: 120,
+  });
+  const deviceIdRef = useRef('');
+
+  const isRunningRef = useRef(false);
+  const buyLockRef = useRef(false);
+  const cooldownUntilRef = useRef(0);
+  const loopTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const learningRef = useRef<Record<number, PriceStat>>({});
+
+  const successRate = useMemo(() => {
+    if (stats.buyAttempts === 0) {
+      return 0;
+    }
+    return (stats.ordersBought / stats.buyAttempts) * 100;
+  }, [stats.buyAttempts, stats.ordersBought]);
 
   useEffect(() => {
-    soundRef.current = sound;
-  }, [sound]);
+    settingsRef.current = {
+      minPrice: Math.max(0, toNumber(minPriceInput, 100)),
+      maxPrice: Math.max(0, toNumber(maxPriceInput, 1500)),
+      minProfit: Math.max(0, toNumber(minProfitInput, 12)),
+      refreshSpeed: clamp(toNumber(refreshSpeedInput, 120), MIN_REFRESH_SPEED, MAX_REFRESH_SPEED),
+    };
+  }, [minPriceInput, maxPriceInput, minProfitInput, refreshSpeedInput]);
 
   useEffect(() => {
-    deviceRef.current = deviceId;
+    smartModeRef.current = smartMode;
+  }, [smartMode]);
+
+  useEffect(() => {
+    safeModeRef.current = safeMode;
+  }, [safeMode]);
+
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+  }, [soundEnabled]);
+
+  useEffect(() => {
+    deviceIdRef.current = deviceId;
   }, [deviceId]);
 
-  useEffect(() => {
-    expiryMsRef.current = subscriptionExpiryMs;
-  }, [subscriptionExpiryMs]);
+  const showBanner = useCallback(
+    (message: string, tone: Tone) => {
+      setBanner({ message, tone });
 
-  useEffect(() => {
-    subscriptionUuidRef.current = subscriptionUuid;
-  }, [subscriptionUuid]);
+      if (bannerTimeoutRef.current) {
+        clearTimeout(bannerTimeoutRef.current);
+      }
 
-  useEffect(() => {
-    minPriceRef.current = minPrice;
-  }, [minPrice]);
-
-  useEffect(() => {
-    maxPriceRef.current = maxPrice;
-  }, [maxPrice]);
-
-  const successRate = useMemo(() => (stats.buyAttempts ? (stats.ordersBought / stats.buyAttempts) * 100 : 0), [stats.buyAttempts, stats.ordersBought]);
-  const selectedPlan = useMemo(
-    () => PLAN_OPTIONS.find((p) => p.id === selectedPlanId) ?? PLAN_OPTIONS[0],
-    [selectedPlanId],
-  );
-  const remainingMs = useMemo(
-    () => (subscriptionExpiryMs === null ? null : Math.max(subscriptionExpiryMs - nowMs, 0)),
-    [nowMs, subscriptionExpiryMs],
-  );
-  const expiryText = useMemo(() => formatRemaining(remainingMs), [remainingMs]);
-  const speedMs = useMemo(() => (speedPreset === 'custom' ? clamp(num(customSpeed, 200), 50, 500) : Number(speedPreset)), [customSpeed, speedPreset]);
-  const cfg = useMemo(() => ({
-    minPrice: Math.max(0, num(minPrice, 100)),
-    maxPrice: Math.max(0, num(maxPrice, 10000)),
-    minProfit: FIXED_MIN_PROFIT,
-    speedMs,
-    smartMode: smart,
-    safeMode: safe,
-    cooldownMs: safe ? 1100 : 700,
-  }), [maxPrice, minPrice, safe, smart, speedMs]);
-  const getLiveCfg = useCallback(() => {
-    const liveMin = Math.max(0, num(minPriceRef.current, 100));
-    const liveMax = Math.max(0, num(maxPriceRef.current, 10000));
-    return { ...cfg, minPrice: liveMin, maxPrice: liveMax };
-  }, [cfg]);
-
-  const showBanner = useCallback((message: string, tone: Tone) => {
-    setBanner({ message, tone });
-    if (bannerTimer.current) clearTimeout(bannerTimer.current);
-    Animated.parallel([
-      Animated.timing(bannerOpacity, { toValue: 1, duration: 170, easing: Easing.out(Easing.quad), useNativeDriver: true }),
-      Animated.timing(bannerY, { toValue: 0, duration: 170, easing: Easing.out(Easing.quad), useNativeDriver: true }),
-    ]).start();
-    bannerTimer.current = setTimeout(() => {
       Animated.parallel([
-        Animated.timing(bannerOpacity, { toValue: 0, duration: 160, easing: Easing.in(Easing.quad), useNativeDriver: true }),
-        Animated.timing(bannerY, { toValue: -10, duration: 160, easing: Easing.in(Easing.quad), useNativeDriver: true }),
-      ]).start(({ finished }) => { if (finished) setBanner(null); });
-    }, 1700);
-  }, [bannerOpacity, bannerY]);
+        Animated.timing(bannerOpacity, {
+          toValue: 1,
+          duration: 200,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(bannerTranslateY, {
+          toValue: 0,
+          duration: 200,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]).start();
 
-  const notify = useCallback(async (message: string, tone: Tone = 'neutral') => {
-    showBanner(message, tone);
-    if (!soundRef.current) return;
-    try {
-      if (tone === 'success') await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      else if (tone === 'danger') await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      else await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-    } catch {}
-  }, [showBanner]);
+      bannerTimeoutRef.current = setTimeout(() => {
+        Animated.parallel([
+          Animated.timing(bannerOpacity, {
+            toValue: 0,
+            duration: 180,
+            easing: Easing.in(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(bannerTranslateY, {
+            toValue: -10,
+            duration: 180,
+            easing: Easing.in(Easing.quad),
+            useNativeDriver: true,
+          }),
+        ]).start(({ finished }) => {
+          if (finished) {
+            setBanner(null);
+          }
+        });
+      }, 1700);
+    },
+    [bannerOpacity, bannerTranslateY]
+  );
 
   const pushLog = useCallback((message: string, tone: Tone = 'neutral') => {
-    setLogs((prev) => [{ id: `${Date.now()}-${Math.random()}`, message, tone, time: fmtTime() }, ...prev].slice(0, 80));
-  }, []);
+    setLogItems((prev) => {
+      const next: LogEntry[] = [
+        {
+          id: `${Date.now()}-${Math.random()}`,
+          message,
+          tone,
+          time: formatTimestamp(),
+        },
+        ...prev,
+      ];
 
-  const resolveDeviceId = useCallback(async () => {
-    if (Platform.OS === 'android') {
-      const id = Application.getAndroidId();
-      if (id) return id;
-    }
-    if (Platform.OS === 'ios') {
-      const id = await Application.getIosIdForVendorAsync();
-      if (id) return id;
-    }
-    return `device-${Application.applicationId ?? 'arb'}-${Date.now()}`;
-  }, []);
-
-  const checkSubscription = useCallback(async (source: 'launch' | 'manual' | 'deeplink' | 'expiry' = 'launch') => {
-    setChecking(true);
-    try {
-      const id = deviceRef.current || (await resolveDeviceId());
-      deviceRef.current = id;
-      setDeviceId(id);
-      const res = await axios.get(`${BASE_URL}/check`, { params: { device_id: id }, timeout: 6000 });
-      const payload = (res.data ?? {}) as CheckPayload;
-      const isActive = Boolean(payload.active);
-      const nextSubscriptionUuid = typeof payload.subscription_uuid === 'string' ? payload.subscription_uuid : '';
-      let expiryMs = parseExpiryMs(payload);
-      if (expiryMs === null && nextSubscriptionUuid && nextSubscriptionUuid === subscriptionUuidRef.current) {
-        expiryMs = expiryMsRef.current;
-      }
-      setActive(isActive);
-      setSubscriptionUuid(nextSubscriptionUuid);
-      setSubscriptionExpiryMs(expiryMs);
-      setNowMs(Date.now());
-      if (source === 'expiry') {
-        await notify(isActive ? 'Subscription active. Bot unlocked.' : 'Subscription expired. Please renew.', isActive ? 'success' : 'danger');
-      } else if (source !== 'launch') {
-        await notify(isActive ? 'Subscription active. Bot unlocked.' : 'Subscription still inactive.', isActive ? 'success' : 'danger');
-      }
-    } catch {
-      setActive(false);
-      setSubscriptionExpiryMs(null);
-      if (source === 'expiry') await notify('Could not verify expiry right now.', 'danger');
-      else if (source !== 'launch') await notify('Unable to verify subscription right now.', 'danger');
-    } finally {
-      setCheckedOnce(true);
-      setChecking(false);
-    }
-  }, [notify, resolveDeviceId]);
-
-  const sendCmd = useCallback((command: 'start' | 'stop' | 'updateConfig' | 'ping', payload?: unknown) => {
-    const js = payload === undefined
-      ? `(function(){if(window.__ARB_BOT__){window.__ARB_BOT__.${command}();}})();true;`
-      : `(function(){if(window.__ARB_BOT__){window.__ARB_BOT__.${command}(${JSON.stringify(payload)});}})();true;`;
-    webRef.current?.injectJavaScript(js);
-  }, []);
-
-  const injectBot = useCallback(() => {
-    webRef.current?.injectJavaScript(BOT_SCRIPT);
-  }, []);
-
-  const updateLearning = useCallback((price: number, success: boolean) => {
-    const b = Math.floor(price / 50) * 50;
-    const rec = learningRef.current[b] ?? { count: 0, success: 0 };
-    rec.count += 1;
-    if (success) rec.success += 1;
-    learningRef.current[b] = rec;
-
-    let best: number | null = null;
-    let bestRate = -1;
-    let bestCount = -1;
-    for (const [k, v] of Object.entries(learningRef.current)) {
-      if (!v.count) continue;
-      const r = (v.success / v.count) * 100;
-      if (r > bestRate || (r === bestRate && v.count > bestCount)) {
-        best = Number(k);
-        bestRate = r;
-        bestCount = v.count;
-      }
-    }
-    if (best === null) setBestRange('N/A');
-    else setBestRange(`\u20B9${best} - \u20B9${best + 49} (${Math.round(bestRate)}%)`);
-  }, []);
-
-  const onWebMessage = useCallback((event: WebViewMessageEvent) => {
-    let msg: BotMsg;
-    try {
-      msg = JSON.parse(event.nativeEvent.data) as BotMsg;
-    } catch {
-      return;
-    }
-    const p = msg.payload ?? {};
-    switch (msg.type) {
-      case 'ready':
-        setWebReady(true);
-        break;
-      case 'running':
-        setRunning(Boolean(p.running));
-        break;
-      case 'bought': {
-        const price = Number(p.price);
-        const reward = Number(p.reward);
-        const ok = Number.isFinite(price) && Number.isFinite(reward);
-        setStats((prev) => ({ ...prev, buyAttempts: prev.buyAttempts + 1, ordersBought: prev.ordersBought + 1, estimatedProfit: prev.estimatedProfit + (ok ? Math.max(reward - price, 0) : 0) }));
-        if (ok) {
-          updateLearning(price, true);
-          pushLog(`Bought \u2705 (\u20B9${price})`, 'success');
-        } else pushLog('Bought \u2705', 'success');
-        void notify('Buy success', 'success');
-        break;
-      }
-      case 'buyFailed': {
-        const price = Number(p.price);
-        setStats((prev) => ({ ...prev, buyAttempts: prev.buyAttempts + 1 }));
-        if (Number.isFinite(price)) {
-          updateLearning(price, false);
-          pushLog(`Buy failed (\u20B9${price})`, 'danger');
-        } else pushLog('Buy failed', 'danger');
-        void notify('Buy failed', 'danger');
-        break;
-      }
-      case 'skipped': {
-        const reason = typeof p.reason === 'string' ? p.reason : 'filtered';
-        const price = Number(p.price);
-        if (Number.isFinite(price)) pushLog(`Skipped (${reason}) \u20B9${price}`, 'neutral');
-        else pushLog(`Skipped (${reason})`, 'neutral');
-        break;
-      }
-      case 'heartbeat': {
-        const b = Number(p.bestBucket);
-        const eligible = Number(p.eligible);
-        if (Number.isFinite(eligible) && eligible > 0) {
-          setStats((prev) => ({ ...prev, ordersDetected: prev.ordersDetected + Math.floor(eligible) }));
-        }
-        if (Number.isFinite(b)) setBestRange(`\u20B9${b} - \u20B9${b + 49}`);
-        break;
-      }
-      case 'engineError': {
-        const text = typeof p.message === 'string' ? p.message : 'Unknown engine error';
-        pushLog(`Engine error: ${text}`, 'danger');
-        void notify('Automation engine error', 'danger');
-        break;
-      }
-      default:
-        break;
-    }
-  }, [notify, pushLog, updateLearning]);
-
-  const startBot = useCallback(() => {
-    const liveCfg = getLiveCfg();
-    if (!active) {
-      Alert.alert('Subscription Required', 'Activate your plan before starting the bot.');
-      return;
-    }
-    if (liveCfg.maxPrice < liveCfg.minPrice) {
-      Alert.alert('Invalid Range', 'Max Price must be greater than or equal to Min Price.');
-      return;
-    }
-    if (!webReady) {
-      injectBot();
-      pushLog('Preparing website automation engine...', 'neutral');
-    }
-    sendCmd('start', liveCfg);
-    setRunning(true);
-    pushLog(`Bot started (${liveCfg.speedMs}ms) range \u20B9${liveCfg.minPrice}-\u20B9${liveCfg.maxPrice}`, 'success');
-    void notify('Bot started', 'success');
-  }, [active, getLiveCfg, injectBot, notify, pushLog, sendCmd, webReady]);
-
-  const stopBot = useCallback(() => {
-    sendCmd('stop');
-    setRunning(false);
-    pushLog('Bot stopped', 'danger');
-    void notify('Bot stopped', 'danger');
-  }, [notify, pushLog, sendCmd]);
-
-  const normalizeSpeed = useCallback(() => {
-    if (speedPreset !== 'custom') return;
-    setCustomSpeed(String(clamp(num(customSpeed, 200), 50, 500)));
-  }, [customSpeed, speedPreset]);
-
-  const onMinPriceChange = useCallback((v: string) => {
-    const next = onlyDigits(v);
-    minPriceRef.current = next;
-    setMinPrice(next);
-  }, []);
-
-  const onMaxPriceChange = useCallback((v: string) => {
-    const next = onlyDigits(v);
-    maxPriceRef.current = next;
-    setMaxPrice(next);
-  }, []);
-
-  const onCustomSpeedChange = useCallback((v: string) => {
-    setCustomSpeed(onlyDigits(v));
-  }, []);
-
-  const toggleHeader = useCallback(() => {
-    setHeaderMinimized((prev) => {
-      const next = !prev;
-      if (next) setLogsOpen(false);
-      return next;
+      return next.slice(0, 140);
     });
   }, []);
 
-  const buyNow = useCallback(async () => {
-    const id = deviceRef.current || (await resolveDeviceId());
-    if (!deviceRef.current) {
-      deviceRef.current = id;
+  const notify = useCallback(
+    async (message: string, tone: Tone = 'neutral') => {
+      showBanner(message, tone);
+
+      if (!soundEnabledRef.current) {
+        return;
+      }
+
+      try {
+        playWebBeep(tone);
+        void playNativeBeep();
+
+        if (tone === 'success') {
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } else if (tone === 'danger') {
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        } else {
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        }
+
+        if (Platform.OS !== 'web') {
+          Vibration.vibrate(tone === 'danger' ? [0, 120, 80, 120] : 120);
+        }
+      } catch {
+        // Ignore alert feedback errors (e.g., unsupported environments).
+      }
+    },
+    [showBanner]
+  );
+
+  const resolveDeviceId = useCallback(async () => {
+    if (Platform.OS === 'android') {
+      const androidId = Application.getAndroidId();
+      if (androidId) {
+        return androidId;
+      }
+    }
+
+    if (Platform.OS === 'ios') {
+      const iosId = await Application.getIosIdForVendorAsync();
+      if (iosId) {
+        return iosId;
+      }
+    }
+
+    return `device-${Application.applicationId ?? 'arb'}-${Date.now()}`;
+  }, []);
+
+  const checkSubscription = useCallback(
+    async (source: 'launch' | 'manual' | 'deeplink' = 'launch') => {
+      setCheckingSubscription(true);
+
+      try {
+        const currentId = deviceIdRef.current || (await resolveDeviceId());
+        deviceIdRef.current = currentId;
+        setDeviceId(currentId);
+
+        const response = await axios.get(`${BASE_URL}/check`, {
+          params: { device_id: currentId },
+          timeout: 5000,
+        });
+
+        const active = Boolean(response.data?.active);
+        setSubscriptionActive(active);
+
+        if (source !== 'launch') {
+          if (active) {
+            await notify('Subscription verified. Dashboard unlocked.', 'success');
+          } else {
+            await notify('Subscription still inactive.', 'danger');
+          }
+        }
+      } catch {
+        setSubscriptionActive(false);
+        if (source !== 'launch') {
+          await notify('Network issue while checking subscription.', 'danger');
+        }
+      } finally {
+        setHasCheckedOnce(true);
+        setCheckingSubscription(false);
+      }
+    },
+    [notify, resolveDeviceId]
+  );
+
+  const refreshBestPrice = useCallback(() => {
+    const entries = Object.entries(learningRef.current);
+    if (entries.length === 0) {
+      setBestPerformingPrice('N/A');
+      return;
+    }
+
+    let bestBucket = Number(entries[0][0]);
+    let bestRate = 0;
+    let bestCount = 0;
+
+    for (const [bucketKey, value] of entries) {
+      if (value.count === 0) {
+        continue;
+      }
+
+      const rate = value.success / value.count;
+      if (rate > bestRate || (Math.abs(rate - bestRate) < 0.0001 && value.count > bestCount)) {
+        bestBucket = Number(bucketKey);
+        bestRate = rate;
+        bestCount = value.count;
+      }
+    }
+
+    if (bestCount === 0) {
+      setBestPerformingPrice('N/A');
+      return;
+    }
+
+    setBestPerformingPrice(`${formatBucketLabel(bestBucket)} (${Math.round(bestRate * 100)}%)`);
+  }, []);
+
+  const updateLearning = useCallback(
+    (price: number, success: boolean) => {
+      const bucket = getBucketStart(price);
+      const current = learningRef.current[bucket] ?? { count: 0, success: 0 };
+      current.count += 1;
+      if (success) {
+        current.success += 1;
+      }
+      learningRef.current[bucket] = current;
+      refreshBestPrice();
+    },
+    [refreshBestPrice]
+  );
+
+  const generateOrder = useCallback((): OrderCandidate => {
+    const price = randomInt(80, 2500);
+    const rewardMultiplier = 1 + randomInt(4, 52) / 100;
+    const reward = Math.round(price * rewardMultiplier);
+    const profitPercent = ((reward - price) / price) * 100;
+
+    return { price, reward, profitPercent };
+  }, []);
+
+  const stopBot = useCallback(() => {
+    isRunningRef.current = false;
+    buyLockRef.current = false;
+    setBotRunning(false);
+
+    if (loopTimeoutRef.current) {
+      clearTimeout(loopTimeoutRef.current);
+      loopTimeoutRef.current = null;
+    }
+
+    pushLog('Bot stopped', 'danger');
+    void notify('Bot stopped', 'danger');
+  }, [notify, pushLog]);
+
+  const runBotTick = useCallback(async () => {
+    if (!isRunningRef.current) {
+      return;
+    }
+
+    const settings = settingsRef.current;
+    const scansThisCycle = Math.random() < 0.7 ? 1 : 2;
+
+    for (let i = 0; i < scansThisCycle; i += 1) {
+      if (!isRunningRef.current) {
+        return;
+      }
+
+      const order = generateOrder();
+
+      setStats((prev) => ({
+        ...prev,
+        ordersDetected: prev.ordersDetected + 1,
+      }));
+
+      pushLog(`Order \u20B9${order.price} detected`, 'neutral');
+      void notify(`Order detected: \u20B9${order.price}`, 'neutral');
+
+      if (order.price < settings.minPrice || order.price > settings.maxPrice) {
+        pushLog(`Skipped (outside range): \u20B9${order.price}`, 'neutral');
+        continue;
+      }
+
+      if (order.profitPercent < settings.minProfit) {
+        pushLog(`Skipped (low profit ${order.profitPercent.toFixed(1)}%)`, 'neutral');
+        continue;
+      }
+
+      const bucketStart = getBucketStart(order.price);
+      let prioritized = false;
+
+      if (smartModeRef.current) {
+        const bucketData = learningRef.current[bucketStart];
+
+        if (bucketData && bucketData.count >= 3) {
+          const bucketSuccessRate = (bucketData.success / bucketData.count) * 100;
+
+          if (bucketSuccessRate < 30) {
+            pushLog(
+              `Skipped (smart mode: ${Math.round(bucketSuccessRate)}% at ${formatBucketLabel(bucketStart)})`,
+              'danger'
+            );
+            continue;
+          }
+
+          if (bucketSuccessRate > 60) {
+            prioritized = true;
+            pushLog(`Priority boost on ${formatBucketLabel(bucketStart)}`, 'success');
+          }
+        }
+      }
+
+      if (Date.now() < cooldownUntilRef.current) {
+        pushLog('Skipped (cooldown active)', 'neutral');
+        continue;
+      }
+
+      if (buyLockRef.current) {
+        pushLog('Skipped (buy lock active)', 'neutral');
+        continue;
+      }
+
+      buyLockRef.current = true;
+
+      try {
+        if (safeModeRef.current) {
+          await sleep(randomInt(120, 380));
+        }
+
+        await sleep(randomInt(20, 80));
+
+        const successChance = prioritized ? 0.86 : 0.68;
+        const isBuySuccess = Math.random() < successChance;
+
+        setStats((prev) => ({
+          ...prev,
+          buyAttempts: prev.buyAttempts + 1,
+          ordersBought: prev.ordersBought + (isBuySuccess ? 1 : 0),
+          estimatedProfit: prev.estimatedProfit + (isBuySuccess ? Math.max(order.reward - order.price, 0) : 0),
+        }));
+
+        updateLearning(order.price, isBuySuccess);
+
+        if (isBuySuccess) {
+          pushLog(`Bought successfully at \u20B9${order.price}`, 'success');
+          void notify('Buy success', 'success');
+          cooldownUntilRef.current = Date.now() + BUY_COOLDOWN_MS;
+        } else {
+          pushLog(`Buy failed at \u20B9${order.price}`, 'danger');
+          void notify('Buy failed', 'danger');
+        }
+      } finally {
+        buyLockRef.current = false;
+      }
+    }
+
+    if (isRunningRef.current) {
+      loopTimeoutRef.current = setTimeout(() => {
+        void runBotTick();
+      }, settingsRef.current.refreshSpeed);
+    }
+  }, [generateOrder, notify, pushLog, updateLearning]);
+
+  const startBot = useCallback(() => {
+    if (!subscriptionActive) {
+      Alert.alert('Subscription Required', 'Please activate your plan to run the bot.');
+      return;
+    }
+
+    if (isRunningRef.current) {
+      return;
+    }
+
+    const settings = settingsRef.current;
+
+    if (settings.maxPrice < settings.minPrice) {
+      Alert.alert('Invalid Range', 'Max Price must be greater than or equal to Min Price.');
+      return;
+    }
+
+    isRunningRef.current = true;
+    setBotRunning(true);
+
+    pushLog(`Bot started (${settings.refreshSpeed}ms refresh)`, 'success');
+    void notify('Bot started', 'success');
+
+    void runBotTick();
+  }, [notify, pushLog, runBotTick, subscriptionActive]);
+
+  const normalizeRefreshInput = useCallback(() => {
+    const normalized = clamp(toNumber(refreshSpeedInput, 120), MIN_REFRESH_SPEED, MAX_REFRESH_SPEED);
+    setRefreshSpeedInput(String(normalized));
+  }, [refreshSpeedInput]);
+
+  const handleBuyNow = useCallback(async () => {
+    const id = deviceId || (await resolveDeviceId());
+    if (!deviceId) {
       setDeviceId(id);
     }
-    try {
-      const res = await axios.post(
-        `${BASE_URL}/payment/init`,
-        { device_id: id, amount: selectedPlan.price, plan_code: selectedPlan.code, phone: DEFAULT_PHONE },
-        { timeout: 7000 },
-      );
-      const url = res.data?.payment_url;
-      if (!url || typeof url !== 'string') throw new Error('Missing payment URL');
-      if (typeof res.data?.subscription_uuid === 'string') setSubscriptionUuid(res.data.subscription_uuid);
-      await Linking.openURL(url);
-    } catch {
-      Alert.alert('Payment Error', 'Unable to start payment right now.');
-    }
-  }, [resolveDeviceId, selectedPlan.code, selectedPlan.price]);
 
-  const handleDeepLink = useCallback(async (url: string) => {
-    const parsed = Linking.parse(url);
-    const ok = url.toLowerCase().startsWith(`${APP_SCHEME}://payment-success`) || parsed.path === 'payment-success';
-    if (!ok) return;
-    pushLog('Payment success callback received', 'success');
-    await notify('Payment success received. Verifying...', 'neutral');
-    await checkSubscription('deeplink');
-  }, [checkSubscription, notify, pushLog]);
+    try {
+      const response = await axios.post(
+        `${BASE_URL}/payment/init`,
+        {
+          device_id: id,
+          amount: PLAN_AMOUNT,
+          plan_code: PLAN_CODE,
+          phone: 'NULL',
+        },
+        { timeout: 7000 }
+      );
+
+      const paymentUrl = response.data?.payment_url;
+      if (!paymentUrl || typeof paymentUrl !== 'string') {
+        throw new Error('Missing payment URL');
+      }
+
+      await Linking.openURL(paymentUrl);
+    } catch {
+      Alert.alert('Payment Error', 'Unable to open payment page. Please try again.');
+    }
+  }, [deviceId, resolveDeviceId]);
+
+  const handleDeepLink = useCallback(
+    async (url: string) => {
+      const parsed = Linking.parse(url);
+      const isPaymentSuccess =
+        url.toLowerCase().startsWith(`${APP_SCHEME}://payment-success`) || parsed.path === 'payment-success';
+
+      if (!isPaymentSuccess) {
+        return;
+      }
+
+      pushLog('Payment success callback received', 'success');
+      await notify('Payment success detected. Verifying...', 'neutral');
+      await checkSubscription('deeplink');
+    },
+    [checkSubscription, notify, pushLog]
+  );
 
   useEffect(() => {
     void checkSubscription('launch');
   }, [checkSubscription]);
 
   useEffect(() => {
-    if (subscriptionExpiryMs === null) return;
-    const timer = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [subscriptionExpiryMs]);
+    void Linking.getInitialURL().then((url) => {
+      if (url) {
+        void handleDeepLink(url);
+      }
+    });
 
-  useEffect(() => {
-    if (remainingMs === null || remainingMs > 0) {
-      expirySyncRef.current = false;
-      return;
-    }
-    if (expirySyncRef.current) return;
-    expirySyncRef.current = true;
-    pushLog('Subscription timer ended. Rechecking...', 'neutral');
-    void checkSubscription('expiry');
-  }, [checkSubscription, pushLog, remainingMs]);
+    const sub = Linking.addEventListener('url', ({ url }) => {
+      void handleDeepLink(url);
+    });
 
-  useEffect(() => {
-    void Linking.getInitialURL().then((url) => { if (url) void handleDeepLink(url); });
-    const sub = Linking.addEventListener('url', ({ url }) => void handleDeepLink(url));
-    return () => sub.remove();
+    return () => {
+      sub.remove();
+    };
   }, [handleDeepLink]);
 
   useEffect(() => {
-    if (!active) return;
-    injectBot();
-    sendCmd('ping');
-  }, [active, injectBot, sendCmd]);
-
-  useEffect(() => {
-    if (!running) return;
-    sendCmd('updateConfig', getLiveCfg());
-  }, [getLiveCfg, running, sendCmd]);
-
-  useEffect(() => {
-    if (Platform.OS !== 'android') return;
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (!active) return false;
-      const onBuyRoute = (webUrl || '').includes('#/buy/arb');
-      if (webCanGoBack && !onBuyRoute) {
-        webRef.current?.goBack();
-        return true;
+    return () => {
+      if (loopTimeoutRef.current) {
+        clearTimeout(loopTimeoutRef.current);
       }
-      const now = Date.now();
-      if (now - lastBackPressRef.current < 1600) {
-        BackHandler.exitApp();
-        return true;
+
+      if (bannerTimeoutRef.current) {
+        clearTimeout(bannerTimeoutRef.current);
       }
-      lastBackPressRef.current = now;
-      void notify('Press back again to exit', 'neutral');
-      return true;
-    });
-    return () => sub.remove();
-  }, [active, notify, webCanGoBack, webUrl]);
+    };
+  }, []);
 
-  useEffect(() => () => { if (bannerTimer.current) clearTimeout(bannerTimer.current); }, []);
-
-  if (!checkedOnce && checking) {
+  if (!hasCheckedOnce && checkingSubscription) {
     return (
-      <View style={styles.center}>
+      <View style={styles.screenCenter}>
         <ActivityIndicator size="large" color="#00ff99" />
-        <Text style={styles.loading}>Checking subscription...</Text>
+        <Text style={styles.loadingText}>Checking subscription...</Text>
       </View>
     );
   }
 
-  const status = running ? 'Running \u2705' : 'Stopped \u274C';
-  const statusColor = running ? '#00ff99' : '#ff5d61';
+  const statusLabel = botRunning ? 'Running \u2705' : 'Inactive \u274C';
+  const statusColor = botRunning ? '#00ff99' : '#ff4d4f';
 
   return (
     <View style={styles.screen}>
       {banner ? (
-        <Animated.View style={[styles.banner, banner.tone === 'success' ? styles.bannerSuccess : banner.tone === 'danger' ? styles.bannerDanger : styles.bannerNeutral, { opacity: bannerOpacity, transform: [{ translateY: bannerY }] }]}>
+        <Animated.View
+          style={[
+            styles.banner,
+            banner.tone === 'success'
+              ? styles.bannerSuccess
+              : banner.tone === 'danger'
+                ? styles.bannerDanger
+                : styles.bannerNeutral,
+            {
+              opacity: bannerOpacity,
+              transform: [{ translateY: bannerTranslateY }],
+            },
+          ]}>
           <Text style={styles.bannerText}>{banner.message}</Text>
         </Animated.View>
       ) : null}
 
-      {!active ? (
-        <View style={styles.planWrap}>
+      {!subscriptionActive ? (
+        <View style={styles.planWrapper}>
           <View style={styles.planCard}>
-            <Text style={styles.planTitle}>Subscription Plans</Text>
-            <View style={styles.planOptions}>
-              {PLAN_OPTIONS.map((plan) => {
-                const isActivePlan = plan.id === selectedPlanId;
-                return (
-                  <TouchableOpacity
-                    key={plan.id}
-                    style={[styles.planOption, isActivePlan && styles.planOptionActive]}
-                    activeOpacity={0.85}
-                    onPress={() => setSelectedPlanId(plan.id)}>
-                    <View style={styles.planOptionTop}>
-                      <Text style={[styles.planOptionPrice, isActivePlan && styles.planOptionPriceActive]}>
-                        {'\u20B9'}{plan.price}
-                      </Text>
-                      <Text style={[styles.planOptionValidity, isActivePlan && styles.planOptionValidityActive]}>
-                        {plan.validity}
-                      </Text>
-                    </View>
-                    <Text style={[styles.planOptionTitle, isActivePlan && styles.planOptionTitleActive]}>
-                      {plan.title}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-            <Text style={styles.planValidity}>
-              Selected: {'\u20B9'}{selectedPlan.price} for {selectedPlan.validity}
-            </Text>
-            <View style={styles.planList}>
-              {PLAN_FEATURES.map((f) => (
-                <View key={f} style={styles.planItem}>
-                  <Text style={styles.planDot}>{'\u2022'}</Text>
-                  <Text style={styles.planText}>{f}</Text>
-                </View>
-              ))}
-            </View>
-            <TouchableOpacity style={styles.buyBtn} onPress={() => void buyNow()}>
-              <Text style={styles.buyBtnText}>Buy {selectedPlan.title}</Text>
+            <Text style={styles.planTitle}>Subscription Plan</Text>
+            <Text style={styles.planPrice}>{'\u20B9'}50</Text>
+            <Text style={styles.planValidity}>Valid for 1 Day</Text>
+
+            <TouchableOpacity style={styles.primaryButton} onPress={() => void handleBuyNow()}>
+              <Text style={styles.primaryButtonText}>Buy Now</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.recheckBtn} onPress={() => void checkSubscription('manual')} disabled={checking}>
-              <Text style={styles.recheckText}>{checking ? 'Checking...' : 'I Paid, Recheck'}</Text>
+
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={() => void checkSubscription('manual')}
+              disabled={checkingSubscription}>
+              <Text style={styles.secondaryButtonText}>
+                {checkingSubscription ? 'Checking...' : 'I Paid, Recheck'}
+              </Text>
             </TouchableOpacity>
-            <Text style={styles.meta}>
-              Pricing: {'\u20B9'}50 / 5 Days or {'\u20B9'}10 / 1 Hour
+
+            <Text style={styles.planHint}>Single plan: {'\u20B9'}50 per day</Text>
+            <Text style={styles.deviceHint} numberOfLines={1}>
+              Device ID: {deviceId || 'loading...'}
             </Text>
-            <Text style={styles.meta}>Device ID: {deviceId || 'loading...'}</Text>
-            <Text style={styles.meta}>Subscription UUID: {subscriptionUuid || 'creating...'}</Text>
+            <Text style={styles.deepLinkHint}>Expected callback: myapp://payment-success</Text>
           </View>
         </View>
       ) : (
-        <View style={styles.botRoot}>
-          <View style={[styles.header, headerMinimized && styles.headerMinimized, { paddingTop: insets.top + 8 }]}>
-            <View style={styles.topRow}>
-              <Text style={styles.title}>ARB Smart Bot</Text>
-              <View style={styles.topRowRight}>
-                <View style={[styles.statusPill, { borderColor: statusColor }]}>
-                  <Text style={[styles.statusPillText, { color: statusColor }]}>{status}</Text>
-                </View>
-                <TouchableOpacity style={styles.minimizeBtn} onPress={toggleHeader}>
-                  <Text style={styles.minimizeBtnText}>{headerMinimized ? 'EXPAND' : 'MIN'}</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-            <View style={styles.expiryRow}>
-              <Text style={styles.expiryLabel}>Plan Left</Text>
-              <Text style={[styles.expiryValue, remainingMs !== null && remainingMs <= 0 ? styles.bad : styles.ok]}>
-                {expiryText}
-              </Text>
+        <ScrollView contentContainerStyle={styles.content}>
+          <View style={styles.headerCard}>
+            <Text style={styles.headerTitle}>ARB Smart Bot</Text>
+            <Text style={[styles.headerStatus, { color: statusColor }]}>{statusLabel}</Text>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>Controls</Text>
+
+            <View style={styles.inputRow}>
+              <Text style={styles.inputLabel}>Min Price</Text>
+              <TextInput
+                value={minPriceInput}
+                onChangeText={setMinPriceInput}
+                keyboardType="number-pad"
+                style={styles.input}
+                placeholder="100"
+                placeholderTextColor="#647067"
+              />
             </View>
 
-            {headerMinimized ? (
-              <View style={styles.miniRow}>
-                <TouchableOpacity style={[styles.ctrlBtn, running ? styles.stop : styles.start]} onPress={running ? stopBot : startBot}>
-                  <Text style={styles.ctrlText}>{running ? 'STOP' : 'START'}</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <>
-                <View style={styles.inputsRow}>
-                  <View style={styles.field}><Text style={styles.fieldLabel}>Min</Text><TextInput style={styles.fieldInput} value={minPrice} onChangeText={onMinPriceChange} keyboardType="number-pad" /></View>
-                  <View style={styles.field}><Text style={styles.fieldLabel}>Max</Text><TextInput style={styles.fieldInput} value={maxPrice} onChangeText={onMaxPriceChange} keyboardType="number-pad" /></View>
-                </View>
-                <Text style={styles.fixedProfitNote}>Auto profit filter: {FIXED_MIN_PROFIT}%+</Text>
+            <View style={styles.inputRow}>
+              <Text style={styles.inputLabel}>Max Price</Text>
+              <TextInput
+                value={maxPriceInput}
+                onChangeText={setMaxPriceInput}
+                keyboardType="number-pad"
+                style={styles.input}
+                placeholder="1500"
+                placeholderTextColor="#647067"
+              />
+            </View>
 
-                <View style={styles.speedRow}>
-                  {(['50', '100', '200', 'custom'] as SpeedPreset[]).map((p) => (
-                    <TouchableOpacity key={p} style={[styles.speedChip, speedPreset === p && styles.speedChipActive]} onPress={() => setSpeedPreset(p)}>
-                      <Text style={[styles.speedText, speedPreset === p && styles.speedTextActive]}>{p === 'custom' ? 'Custom' : `${p}ms`}</Text>
-                    </TouchableOpacity>
+            <View style={styles.inputRow}>
+              <Text style={styles.inputLabel}>Min Profit %</Text>
+              <TextInput
+                value={minProfitInput}
+                onChangeText={setMinProfitInput}
+                keyboardType="number-pad"
+                style={styles.input}
+                placeholder="12"
+                placeholderTextColor="#647067"
+              />
+            </View>
+
+            <View style={styles.inputRow}>
+              <Text style={styles.inputLabel}>Refresh Speed (50-500ms)</Text>
+              <TextInput
+                value={refreshSpeedInput}
+                onChangeText={setRefreshSpeedInput}
+                onBlur={normalizeRefreshInput}
+                keyboardType="number-pad"
+                style={styles.input}
+                placeholder="120"
+                placeholderTextColor="#647067"
+              />
+            </View>
+
+            <View style={styles.buttonRow}>
+              <TouchableOpacity
+                style={[styles.actionButton, styles.startButton, botRunning && styles.disabledButton]}
+                onPress={startBot}
+                disabled={botRunning}>
+                <Text style={styles.actionButtonText}>Start Bot</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionButton, styles.stopButton, !botRunning && styles.disabledButton]}
+                onPress={stopBot}
+                disabled={!botRunning}>
+                <Text style={styles.actionButtonText}>Stop Bot</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>Adaptive & Safety</Text>
+
+            <View style={styles.switchRow}>
+              <Text style={styles.switchLabel}>Smart Adaptive Mode</Text>
+              <Switch
+                value={smartMode}
+                onValueChange={setSmartMode}
+                trackColor={{ false: '#3a3a3a', true: '#00b86f' }}
+                thumbColor={smartMode ? '#00ff99' : '#b1b1b1'}
+              />
+            </View>
+
+            <View style={styles.switchRow}>
+              <Text style={styles.switchLabel}>Safe Mode (random delay)</Text>
+              <Switch
+                value={safeMode}
+                onValueChange={setSafeMode}
+                trackColor={{ false: '#3a3a3a', true: '#00b86f' }}
+                thumbColor={safeMode ? '#00ff99' : '#b1b1b1'}
+              />
+            </View>
+
+            <View style={styles.switchRow}>
+              <Text style={styles.switchLabel}>Alert Sound / Haptics</Text>
+              <Switch
+                value={soundEnabled}
+                onValueChange={setSoundEnabled}
+                trackColor={{ false: '#3a3a3a', true: '#00b86f' }}
+                thumbColor={soundEnabled ? '#00ff99' : '#b1b1b1'}
+              />
+            </View>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>Stats Dashboard</Text>
+            <View style={styles.statsGrid}>
+              <View style={styles.statCard}>
+                <Text style={styles.statLabel}>Orders Detected</Text>
+                <Text style={styles.statValue}>{stats.ordersDetected}</Text>
+              </View>
+              <View style={styles.statCard}>
+                <Text style={styles.statLabel}>Orders Bought</Text>
+                <Text style={styles.statValue}>{stats.ordersBought}</Text>
+              </View>
+              <View style={styles.statCard}>
+                <Text style={styles.statLabel}>Success Rate</Text>
+                <Text style={styles.statValue}>{successRate.toFixed(1)}%</Text>
+              </View>
+              <View style={styles.statCard}>
+                <Text style={styles.statLabel}>Estimated Profit</Text>
+                <Text style={styles.statValue}>{'\u20B9'} {stats.estimatedProfit}</Text>
+              </View>
+            </View>
+
+            <View style={styles.bestPriceBox}>
+              <Text style={styles.bestPriceLabel}>Best Performing Price</Text>
+              <Text style={styles.bestPriceValue}>{bestPerformingPrice}</Text>
+            </View>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>Activity Log</Text>
+            <View style={styles.logContainer}>
+              {logItems.length === 0 ? (
+                <Text style={styles.logEmpty}>No activity yet. Start the bot to begin scanning.</Text>
+              ) : (
+                <ScrollView showsVerticalScrollIndicator={false}>
+                  {logItems.map((item) => (
+                    <View key={item.id} style={styles.logRow}>
+                      <Text
+                        style={[
+                          styles.logMessage,
+                          item.tone === 'success'
+                            ? styles.logSuccess
+                            : item.tone === 'danger'
+                              ? styles.logDanger
+                              : styles.logNeutral,
+                        ]}>
+                        {item.message}
+                      </Text>
+                      <Text style={styles.logTime}>{item.time}</Text>
+                    </View>
                   ))}
-                  {speedPreset === 'custom' ? <TextInput style={styles.customInput} value={customSpeed} onChangeText={onCustomSpeedChange} onBlur={normalizeSpeed} keyboardType="number-pad" /> : null}
-                </View>
-
-                <View style={styles.switchRow}>
-                  <View style={styles.switchCell}><Text style={styles.switchLabel}>Smart</Text><Switch value={smart} onValueChange={setSmart} trackColor={{ false: '#3a3a3a', true: '#0bbf75' }} thumbColor={smart ? '#00ff99' : '#b5b5b5'} /></View>
-                  <View style={styles.switchCell}><Text style={styles.switchLabel}>Safe</Text><Switch value={safe} onValueChange={setSafe} trackColor={{ false: '#3a3a3a', true: '#0bbf75' }} thumbColor={safe ? '#00ff99' : '#b5b5b5'} /></View>
-                  <View style={styles.switchCell}><Text style={styles.switchLabel}>Sound</Text><Switch value={sound} onValueChange={setSound} trackColor={{ false: '#3a3a3a', true: '#0bbf75' }} thumbColor={sound ? '#00ff99' : '#b5b5b5'} /></View>
-                </View>
-
-                <View style={styles.btnRow}>
-                  <TouchableOpacity style={[styles.ctrlBtn, styles.start]} onPress={startBot}><Text style={styles.ctrlText}>START</Text></TouchableOpacity>
-                  <TouchableOpacity style={[styles.ctrlBtn, styles.stop]} onPress={stopBot}><Text style={styles.ctrlText}>STOP</Text></TouchableOpacity>
-                  <TouchableOpacity style={[styles.ctrlBtn, styles.logs]} onPress={() => setLogsOpen((v) => !v)}><Text style={styles.ctrlText}>{logsOpen ? 'HIDE' : 'LOGS'}</Text></TouchableOpacity>
-                </View>
-
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.statsScroll}>
-                  <View style={styles.stat}><Text style={styles.statL}>Detected</Text><Text style={styles.statV}>{stats.ordersDetected}</Text></View>
-                  <View style={styles.stat}><Text style={styles.statL}>Bought</Text><Text style={styles.statV}>{stats.ordersBought}</Text></View>
-                  <View style={styles.stat}><Text style={styles.statL}>Success</Text><Text style={styles.statV}>{successRate.toFixed(1)}%</Text></View>
-                  <View style={styles.stat}><Text style={styles.statL}>Profit</Text><Text style={styles.statV}>{'\u20B9'}{stats.estimatedProfit}</Text></View>
-                  <View style={styles.statWide}><Text style={styles.statL}>Best Range</Text><Text style={styles.statV}>{bestRange}</Text></View>
                 </ScrollView>
-
-                {logsOpen ? (
-                  <View style={styles.logPanel}>
-                    <ScrollView showsVerticalScrollIndicator={false}>
-                      {logs.length === 0 ? <Text style={styles.logEmpty}>No activity yet.</Text> : logs.slice(0, 30).map((l) => (
-                        <View key={l.id} style={styles.logRow}>
-                          <Text style={[styles.logMsg, l.tone === 'success' ? styles.ok : l.tone === 'danger' ? styles.bad : styles.neutral]}>{l.message}</Text>
-                          <Text style={styles.logT}>{l.time}</Text>
-                        </View>
-                      ))}
-                    </ScrollView>
-                  </View>
-                ) : null}
-              </>
-            )}
+              )}
+            </View>
           </View>
 
-          <View style={styles.webWrap}>
-            <WebView
-              ref={webRef}
-              source={{ uri: BUY_URL }}
-              style={styles.web}
-              javaScriptEnabled
-              domStorageEnabled
-              mixedContentMode="always"
-              androidLayerType="hardware"
-              setSupportMultipleWindows={false}
-              cacheEnabled
-              scrollEnabled
-              nestedScrollEnabled
-              bounces
-              overScrollMode="content"
-              showsVerticalScrollIndicator
-              showsHorizontalScrollIndicator={false}
-              startInLoadingState
-              injectedJavaScriptBeforeContentLoaded={BOT_SCRIPT}
-              onMessage={onWebMessage}
-              onNavigationStateChange={(navState) => {
-                setWebCanGoBack(Boolean(navState.canGoBack));
-                if (typeof navState.url === 'string' && navState.url) setWebUrl(navState.url);
-              }}
-              onLoadEnd={() => {
-                setWebReady(false);
-                injectBot();
-                sendCmd('ping');
-              }}
-              onError={(e) => {
-                pushLog(`WebView error: ${e.nativeEvent.description}`, 'danger');
-                void notify('Website loading error', 'danger');
-              }}
-            />
+          <View style={styles.footerInfo}>
+            <Text style={styles.footerText}>Pricing: {'\u20B9'}50 per day</Text>
+            <Text style={styles.footerText}>Access: Device-based, no login required</Text>
           </View>
-        </View>
+        </ScrollView>
       )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#000' },
-  center: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' },
-  loading: { marginTop: 10, color: '#b5c2bb', fontSize: 15 },
-  banner: { position: 'absolute', zIndex: 20, top: 12, left: 12, right: 12, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 12, borderWidth: 1 },
-  bannerSuccess: { backgroundColor: '#052014', borderColor: '#00ff99' },
-  bannerDanger: { backgroundColor: '#2a0d10', borderColor: '#ff4d4f' },
-  bannerNeutral: { backgroundColor: '#102218', borderColor: '#2f5f48' },
-  bannerText: { color: '#ecfff4', textAlign: 'center', fontSize: 13, fontWeight: '600' },
-  planWrap: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
-  planCard: { width: '100%', maxWidth: 440, backgroundColor: '#0f1110', borderRadius: 16, padding: 18, borderWidth: 1, borderColor: '#2a4c3a', alignItems: 'center' },
-  planTitle: { color: '#f0fff5', fontSize: 25, fontWeight: '800' },
-  planOptions: { width: '100%', gap: 8, marginTop: 10, marginBottom: 10 },
-  planOption: { width: '100%', borderWidth: 1, borderColor: '#29513f', backgroundColor: '#111916', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 },
-  planOptionActive: { borderColor: '#00ff99', backgroundColor: '#0f2c22' },
-  planOptionTop: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 4 },
-  planOptionPrice: { color: '#dff6eb', fontSize: 24, fontWeight: '800' },
-  planOptionPriceActive: { color: '#00ff99' },
-  planOptionValidity: { color: '#9cb7ab', fontSize: 12, fontWeight: '700' },
-  planOptionValidityActive: { color: '#bfffe2' },
-  planOptionTitle: { color: '#c6ddd2', fontSize: 13, fontWeight: '600' },
-  planOptionTitleActive: { color: '#ecfff6' },
-  planValidity: { color: '#b0c7bc', fontSize: 14, marginBottom: 12 },
-  planList: { width: '100%', borderWidth: 1, borderColor: '#20382c', borderRadius: 12, backgroundColor: '#0b1210', padding: 10, marginBottom: 14, gap: 6 },
-  planItem: { flexDirection: 'row', alignItems: 'flex-start', gap: 7 },
-  planDot: { color: '#00ff99', marginTop: 1 },
-  planText: { color: '#cbdfd6', fontSize: 12, flex: 1 },
-  buyBtn: { width: '100%', backgroundColor: '#00ff99', borderRadius: 11, paddingVertical: 12, alignItems: 'center', marginBottom: 8 },
-  buyBtnText: { color: '#05120d', fontWeight: '800', fontSize: 15 },
-  recheckBtn: { width: '100%', borderRadius: 11, borderWidth: 1, borderColor: '#2e5a45', backgroundColor: '#121f18', paddingVertical: 10, alignItems: 'center', marginBottom: 10 },
-  recheckText: { color: '#cceadd', fontWeight: '700', fontSize: 13 },
-  meta: { color: '#8ea599', fontSize: 11, textAlign: 'center' },
-  botRoot: { flex: 1 },
-  header: { backgroundColor: '#0c1210', borderBottomWidth: 1, borderBottomColor: '#1f3f31', paddingHorizontal: 10, paddingBottom: 10, gap: 7 },
-  headerMinimized: { paddingBottom: 8, gap: 5 },
-  topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  topRowRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  title: { color: '#f1fff7', fontSize: 21, fontWeight: '800' },
-  expiryRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderWidth: 1, borderColor: '#1f3d2f', borderRadius: 10, backgroundColor: '#101915', paddingHorizontal: 10, paddingVertical: 7 },
-  expiryLabel: { color: '#95ab9f', fontSize: 11, fontWeight: '600' },
-  expiryValue: { fontSize: 12, fontWeight: '800' },
-  statusPill: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, backgroundColor: '#111b16' },
-  statusPillText: { fontSize: 12, fontWeight: '700' },
-  minimizeBtn: { borderWidth: 1, borderColor: '#2f5b47', borderRadius: 999, backgroundColor: '#14201a', paddingHorizontal: 10, paddingVertical: 4 },
-  minimizeBtnText: { color: '#9fffd4', fontSize: 11, fontWeight: '800' },
-  miniRow: { flexDirection: 'row', gap: 7 },
-  inputsRow: { flexDirection: 'row', gap: 7 },
-  field: { flex: 1 },
-  fieldLabel: { color: '#98b0a5', fontSize: 11, marginBottom: 3 },
-  fieldInput: { borderWidth: 1, borderColor: '#264034', backgroundColor: '#0b0f0d', borderRadius: 10, color: '#e9fff3', fontSize: 13, paddingHorizontal: 8, paddingVertical: 8 },
-  fixedProfitNote: { color: '#80a895', fontSize: 11, marginTop: -2 },
-  speedRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
-  speedChip: { borderWidth: 1, borderColor: '#2a4538', borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#121816' },
-  speedChipActive: { borderColor: '#00ff99', backgroundColor: '#113226' },
-  speedText: { color: '#a8bdb3', fontSize: 12, fontWeight: '600' },
-  speedTextActive: { color: '#00ff99' },
-  customInput: { minWidth: 70, borderWidth: 1, borderColor: '#2a4538', borderRadius: 10, color: '#e9fff3', backgroundColor: '#0b0f0d', fontSize: 12, paddingHorizontal: 8, paddingVertical: 6 },
-  switchRow: { flexDirection: 'row', gap: 6 },
-  switchCell: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#101815', borderWidth: 1, borderColor: '#213b2f', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 6 },
-  switchLabel: { color: '#d5eee2', fontSize: 12, fontWeight: '600' },
-  btnRow: { flexDirection: 'row', gap: 7 },
-  ctrlBtn: { flex: 1, borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
-  start: { backgroundColor: '#00c778' },
-  stop: { backgroundColor: '#d54548' },
-  logs: { backgroundColor: '#1f3029', borderWidth: 1, borderColor: '#305343' },
-  ctrlText: { color: '#f4fff8', fontSize: 12, fontWeight: '800' },
-  statsScroll: { gap: 7, paddingRight: 8 },
-  stat: { minWidth: 88, borderWidth: 1, borderColor: '#234437', borderRadius: 10, backgroundColor: '#0d1512', paddingHorizontal: 8, paddingVertical: 7 },
-  statWide: { minWidth: 150, borderWidth: 1, borderColor: '#234437', borderRadius: 10, backgroundColor: '#0d1512', paddingHorizontal: 8, paddingVertical: 7 },
-  statL: { color: '#91a99e', fontSize: 10, marginBottom: 2 },
-  statV: { color: '#00ff99', fontSize: 13, fontWeight: '700' },
-  logPanel: { maxHeight: 110, borderWidth: 1, borderColor: '#22372c', borderRadius: 10, backgroundColor: '#090d0b', padding: 8 },
-  logEmpty: { color: '#8ba399', fontSize: 12 },
-  logRow: { borderBottomWidth: 1, borderBottomColor: '#16261f', paddingBottom: 5, marginBottom: 5 },
-  logMsg: { fontSize: 12, fontWeight: '500' },
-  neutral: { color: '#c8dfd3' },
-  ok: { color: '#42f7ab' },
-  bad: { color: '#ff7f82' },
-  logT: { color: '#6d8377', fontSize: 10, marginTop: 1 },
-  webWrap: { flex: 1, backgroundColor: '#000' },
-  web: { flex: 1, backgroundColor: '#000' },
+  screen: {
+    flex: 1,
+    backgroundColor: '#000000',
+  },
+  screenCenter: {
+    flex: 1,
+    backgroundColor: '#000000',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  loadingText: {
+    marginTop: 10,
+    color: '#b5c2bb',
+    fontSize: 15,
+  },
+  banner: {
+    position: 'absolute',
+    zIndex: 20,
+    top: 12,
+    left: 12,
+    right: 12,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+  },
+  bannerSuccess: {
+    backgroundColor: '#052014',
+    borderColor: '#00ff99',
+  },
+  bannerDanger: {
+    backgroundColor: '#2a0d10',
+    borderColor: '#ff4d4f',
+  },
+  bannerNeutral: {
+    backgroundColor: '#102218',
+    borderColor: '#2f5f48',
+  },
+  bannerText: {
+    color: '#ebfff4',
+    fontWeight: '600',
+    textAlign: 'center',
+    fontSize: 13,
+  },
+  planWrapper: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  planCard: {
+    width: '100%',
+    maxWidth: 440,
+    backgroundColor: '#111111',
+    borderRadius: 18,
+    paddingVertical: 28,
+    paddingHorizontal: 20,
+    borderWidth: 1,
+    borderColor: '#1f3a2d',
+    alignItems: 'center',
+  },
+  planTitle: {
+    color: '#ecfef3',
+    fontSize: 25,
+    fontWeight: '700',
+    marginBottom: 10,
+  },
+  planPrice: {
+    color: '#00ff99',
+    fontSize: 36,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  planValidity: {
+    color: '#8ea99b',
+    fontSize: 15,
+    marginBottom: 22,
+  },
+  primaryButton: {
+    width: '100%',
+    borderRadius: 12,
+    backgroundColor: '#00ff99',
+    paddingVertical: 13,
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  primaryButtonText: {
+    color: '#05120d',
+    fontWeight: '800',
+    fontSize: 15,
+  },
+  secondaryButton: {
+    width: '100%',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#2e5a45',
+    backgroundColor: '#121f18',
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  secondaryButtonText: {
+    color: '#cceadd',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  planHint: {
+    fontSize: 12,
+    color: '#6f877b',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  deviceHint: {
+    fontSize: 11,
+    color: '#90a79b',
+    marginBottom: 4,
+    width: '100%',
+    textAlign: 'center',
+  },
+  deepLinkHint: {
+    fontSize: 11,
+    color: '#90a79b',
+  },
+  content: {
+    paddingTop: 48,
+    paddingHorizontal: 14,
+    paddingBottom: 28,
+  },
+  headerCard: {
+    backgroundColor: '#0d1310',
+    borderColor: '#1c3d2d',
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+  },
+  headerTitle: {
+    color: '#f0fff5',
+    fontSize: 28,
+    fontWeight: '800',
+  },
+  headerStatus: {
+    marginTop: 6,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  card: {
+    backgroundColor: '#101010',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#1f2a23',
+    padding: 14,
+    marginBottom: 12,
+  },
+  sectionTitle: {
+    color: '#e8fff2',
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 12,
+  },
+  inputRow: {
+    marginBottom: 10,
+  },
+  inputLabel: {
+    color: '#9ab0a5',
+    fontSize: 13,
+    marginBottom: 5,
+    fontWeight: '600',
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: '#28372e',
+    backgroundColor: '#0b0f0d',
+    color: '#e8fff2',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+  },
+  buttonRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 4,
+  },
+  actionButton: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 13,
+    alignItems: 'center',
+  },
+  startButton: {
+    backgroundColor: '#00cc7d',
+  },
+  stopButton: {
+    backgroundColor: '#d33f45',
+  },
+  disabledButton: {
+    opacity: 0.5,
+  },
+  actionButtonText: {
+    color: '#f5fff8',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  switchRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+    gap: 10,
+  },
+  switchLabel: {
+    color: '#cde5d9',
+    fontSize: 14,
+    fontWeight: '600',
+    flex: 1,
+  },
+  statsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  statCard: {
+    width: '48%',
+    borderWidth: 1,
+    borderColor: '#24382d',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    backgroundColor: '#0b0f0d',
+  },
+  statLabel: {
+    color: '#93ab9f',
+    fontSize: 12,
+    marginBottom: 6,
+  },
+  statValue: {
+    color: '#00ff99',
+    fontSize: 21,
+    fontWeight: '700',
+  },
+  bestPriceBox: {
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#24523d',
+    borderRadius: 12,
+    backgroundColor: '#0b1712',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  bestPriceLabel: {
+    color: '#8fb6a2',
+    fontSize: 12,
+    marginBottom: 3,
+  },
+  bestPriceValue: {
+    color: '#d9ffee',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  logContainer: {
+    borderWidth: 1,
+    borderColor: '#22372c',
+    borderRadius: 12,
+    backgroundColor: '#090c0b',
+    minHeight: 180,
+    maxHeight: 260,
+    padding: 10,
+  },
+  logEmpty: {
+    color: '#8ba399',
+    fontSize: 13,
+  },
+  logRow: {
+    borderBottomWidth: 1,
+    borderBottomColor: '#1b2a22',
+    paddingBottom: 7,
+    marginBottom: 7,
+  },
+  logMessage: {
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  logNeutral: {
+    color: '#c8dfd3',
+  },
+  logSuccess: {
+    color: '#42f7ab',
+  },
+  logDanger: {
+    color: '#ff7f82',
+  },
+  logTime: {
+    color: '#6d8377',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  footerInfo: {
+    marginTop: 2,
+    alignItems: 'center',
+    gap: 4,
+  },
+  footerText: {
+    color: '#7f968b',
+    fontSize: 12,
+  },
 });
-
-
