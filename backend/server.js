@@ -26,14 +26,15 @@ const PLAN_MONTHLY = {
 };
 const DEFAULT_PLAN = PLAN_DAILY;
 const PLAN_AMOUNT = DEFAULT_PLAN.amount;
-const DEFAULT_PHONE = 'NULL';
 const DEPOSIT_UTR_PLACEHOLDER = '00000000000';
-const PAYMENT_BASE_URL = process.env.PAYMENT_BASE_URL || 'https://arbpay.me/';
 const CASHFREE_API_BASE = process.env.CASHFREE_API_BASE || 'https://api.cashfree.com';
 const CASHFREE_API_VERSION = process.env.CASHFREE_API_VERSION || '2023-08-01';
+const CASHFREE_MODE = process.env.CASHFREE_MODE || 'production';
 const CASHFREE_APP_ID = process.env.CASHFREE_APP_ID || '';
 const CASHFREE_SECRET_KEY = process.env.CASHFREE_SECRET_KEY || '';
 const CASHFREE_DEFAULT_PHONE = process.env.CASHFREE_DEFAULT_PHONE || '9999999999';
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || 'https://arbsmartbot-b6rn.onrender.com').replace(/\/+$/, '');
+const APP_RETURN_URL = process.env.APP_RETURN_URL || 'myapp://payment-success';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -167,6 +168,144 @@ const cashfreeHeaders = () => ({
   'x-client-id': CASHFREE_APP_ID,
   'x-client-secret': CASHFREE_SECRET_KEY,
 });
+
+const escapeHtml = (value) =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const buildSuccessUrl = (orderId, subscriptionId) =>
+  `${PUBLIC_BASE_URL}/payment/success?order_id=${encodeURIComponent(orderId)}&uuid=${encodeURIComponent(subscriptionId)}`;
+
+const buildCheckoutUrl = (paymentSessionId, orderId) =>
+  `${PUBLIC_BASE_URL}/payment/checkout?payment_session_id=${encodeURIComponent(paymentSessionId)}&order_id=${encodeURIComponent(orderId)}`;
+
+async function createCashfreeOrder({ orderId, subscriptionId, amount, phone }) {
+  if (!CASHFREE_APP_ID || !CASHFREE_SECRET_KEY) {
+    return {
+      ok: false,
+      status: 500,
+      body: {
+        success: false,
+        error: 'Cashfree credentials missing on backend',
+      },
+    };
+  }
+
+  const cashfreePayload = {
+    order_id: orderId,
+    order_amount: amount,
+    order_currency: 'INR',
+    customer_details: {
+      customer_id: sanitizeCustomerId(subscriptionId),
+      customer_phone: sanitizePhone(phone),
+      customer_name: 'ARB User',
+    },
+    order_meta: {
+      return_url: buildSuccessUrl(orderId, subscriptionId),
+    },
+  };
+
+  const cashfreeResponse = await fetch(`${CASHFREE_API_BASE}/pg/orders`, {
+    method: 'POST',
+    headers: cashfreeHeaders(),
+    body: JSON.stringify(cashfreePayload),
+  });
+
+  const raw = await cashfreeResponse.text();
+  const parsed = parseJsonSafe(raw);
+
+  if (!cashfreeResponse.ok) {
+    const code = parsed?.code || parsed?.error_code || parsed?.type;
+    const isOrderAlreadyExists =
+      cashfreeResponse.status === 409 &&
+      typeof code === 'string' &&
+      code.toLowerCase().includes('order_already_exists');
+
+    if (isOrderAlreadyExists) {
+      const existingOrderResponse = await fetch(
+        `${CASHFREE_API_BASE}/pg/orders/${encodeURIComponent(orderId)}`,
+        {
+          method: 'GET',
+          headers: cashfreeHeaders(),
+        }
+      );
+
+      const existingRaw = await existingOrderResponse.text();
+      const existingParsed = parseJsonSafe(existingRaw);
+
+      if (existingOrderResponse.ok) {
+        const existingPaymentSessionId = existingParsed?.payment_session_id;
+        if (existingPaymentSessionId) {
+          return {
+            ok: true,
+            body: {
+              success: true,
+              payment_session_id: existingPaymentSessionId,
+              checkout_url: buildCheckoutUrl(existingPaymentSessionId, orderId),
+              order_id: orderId,
+              cf_order_id: existingParsed?.cf_order_id || null,
+              reused: true,
+            },
+          };
+        }
+
+        const existingStatus = String(existingParsed?.order_status || '').toUpperCase();
+        if (existingStatus === 'PAID' || existingStatus === 'SUCCESS') {
+          return {
+            ok: false,
+            status: 409,
+            body: {
+              success: false,
+              error: 'cashfree order already paid',
+              code: 'order_already_paid',
+              order_id: orderId,
+              details: existingParsed,
+            },
+          };
+        }
+      }
+    }
+
+    console.error('Cashfree create-order failed:', cashfreeResponse.status, raw);
+    return {
+      ok: false,
+      status: cashfreeResponse.status,
+      body: {
+        success: false,
+        error: 'cashfree create-order failed',
+        details: parsed || raw,
+      },
+    };
+  }
+
+  const paymentSessionId = parsed?.payment_session_id;
+  if (!paymentSessionId) {
+    return {
+      ok: false,
+      status: 502,
+      body: {
+        success: false,
+        error: 'missing payment_session_id from cashfree',
+        details: parsed || raw,
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    body: {
+      success: true,
+      payment_session_id: paymentSessionId,
+      checkout_url: buildCheckoutUrl(paymentSessionId, orderId),
+      order_id: orderId,
+      cf_order_id: parsed?.cf_order_id || null,
+    },
+  };
+}
 
 async function getOrCreateSubscriptionByDevice(deviceId) {
   const { data, error } = await supabase
@@ -338,6 +477,88 @@ app.get('/', (_req, res) => {
   res.json({ ok: true, service: 'arb-smart-bot-backend' });
 });
 
+app.get('/payment/checkout', (req, res) => {
+  const paymentSessionId = typeof req.query.payment_session_id === 'string' ? req.query.payment_session_id : '';
+  const orderId = typeof req.query.order_id === 'string' ? req.query.order_id : '';
+
+  if (!paymentSessionId) {
+    return res.status(400).send('Missing payment session.');
+  }
+
+  const safeSessionId = escapeHtml(paymentSessionId);
+  const safeOrderId = escapeHtml(orderId);
+  const safeMode = escapeHtml(CASHFREE_MODE);
+
+  return res
+    .type('html')
+    .send(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Cashfree Checkout</title>
+    <script src="https://sdk.cashfree.com/js/v3/cashfree.js"></script>
+    <style>
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #050806; color: #effff6; font-family: Arial, sans-serif; }
+      main { width: min(420px, calc(100vw - 32px)); border: 1px solid #1f4f39; border-radius: 14px; padding: 22px; background: #0d1410; text-align: center; }
+      h1 { margin: 0 0 8px; font-size: 22px; }
+      p { color: #a9c5b7; font-size: 14px; line-height: 1.45; }
+      button { border: 0; border-radius: 10px; padding: 12px 16px; background: #00ff99; color: #03120b; font-weight: 800; width: 100%; }
+      .muted { font-size: 12px; color: #769184; overflow-wrap: anywhere; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Opening Cashfree</h1>
+      <p>Please wait while Cashfree checkout opens.</p>
+      <button id="payBtn" type="button">Open Cashfree Checkout</button>
+      <p class="muted">Order: ${safeOrderId}</p>
+    </main>
+    <script>
+      const cashfree = Cashfree({ mode: "${safeMode}" });
+      const openCheckout = () => cashfree.checkout({
+        paymentSessionId: "${safeSessionId}",
+        redirectTarget: "_self"
+      });
+      document.getElementById("payBtn").addEventListener("click", openCheckout);
+      setTimeout(openCheckout, 250);
+    </script>
+  </body>
+</html>`);
+});
+
+app.get('/payment/success', (req, res) => {
+  const orderId = typeof req.query.order_id === 'string' ? req.query.order_id : '';
+  const uuid = typeof req.query.uuid === 'string' ? req.query.uuid : '';
+  const deepLink =
+    `${APP_RETURN_URL}?order_id=${encodeURIComponent(orderId)}&uuid=${encodeURIComponent(uuid)}`;
+
+  return res
+    .type('html')
+    .send(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Payment Complete</title>
+    <style>
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #050806; color: #effff6; font-family: Arial, sans-serif; }
+      main { width: min(420px, calc(100vw - 32px)); border: 1px solid #1f4f39; border-radius: 14px; padding: 22px; background: #0d1410; text-align: center; }
+      a { display: block; border-radius: 10px; padding: 12px 16px; background: #00ff99; color: #03120b; font-weight: 800; text-decoration: none; }
+      p { color: #a9c5b7; font-size: 14px; line-height: 1.45; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Payment Complete</h1>
+      <p>Return to ARB Smart Bot to verify your subscription.</p>
+      <a href="${escapeHtml(deepLink)}">Open App</a>
+    </main>
+    <script>window.location.href = ${JSON.stringify(deepLink)};</script>
+  </body>
+</html>`);
+});
+
 app.post('/payment/init', async (req, res) => {
   try {
     const { device_id, amount, plan_code, phone } = req.body || {};
@@ -348,6 +569,13 @@ app.post('/payment/init', async (req, res) => {
 
     const selectedPlan = resolvePlan(plan_code, amount);
     const paymentAmount = selectedPlan.amount;
+
+    if (!CASHFREE_APP_ID || !CASHFREE_SECRET_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: 'Cashfree credentials missing on backend',
+      });
+    }
 
     const { subscription, error: subscriptionError } = await getOrCreateSubscriptionByDevice(device_id);
 
@@ -373,19 +601,24 @@ app.post('/payment/init', async (req, res) => {
       return res.status(500).json({ success: false, error: 'deposit create failed' });
     }
 
-    const paymentUrl =
-      `${PAYMENT_BASE_URL}?username=${encodeURIComponent(device_id)}` +
-      `&uuid=${encodeURIComponent(subscription.id)}` +
-      `&amount=${encodeURIComponent(String(paymentAmount))}` +
-      `&plan_code=${encodeURIComponent(selectedPlan.code)}` +
-      `&order_id=${encodeURIComponent(orderId)}` +
-      `&phone=${encodeURIComponent(typeof phone === 'string' && phone.trim() ? phone.trim() : DEFAULT_PHONE)}` +
-      '&type=activation';
+    const cashfreeOrder = await createCashfreeOrder({
+      orderId,
+      subscriptionId: subscription.id,
+      amount: paymentAmount,
+      phone,
+    });
+
+    if (!cashfreeOrder.ok) {
+      return res.status(cashfreeOrder.status || 500).json(cashfreeOrder.body);
+    }
 
     return res.json({
       success: true,
-      payment_url: paymentUrl,
+      payment_url: cashfreeOrder.body.checkout_url,
+      checkout_url: cashfreeOrder.body.checkout_url,
+      payment_session_id: cashfreeOrder.body.payment_session_id,
       order_id: orderId,
+      cf_order_id: cashfreeOrder.body.cf_order_id || null,
       subscription_uuid: subscription.id,
       amount: paymentAmount,
       plan_code: selectedPlan.code,
@@ -399,17 +632,10 @@ app.post('/payment/init', async (req, res) => {
 
 app.post('/payment/create-order', async (req, res) => {
   try {
-    const { order_id, user_id, amount, phone, return_url } = req.body || {};
+    const { order_id, user_id, amount, phone } = req.body || {};
 
     if (!order_id || !user_id) {
       return res.status(400).json({ success: false, error: 'order_id and user_id are required' });
-    }
-
-    if (!CASHFREE_APP_ID || !CASHFREE_SECRET_KEY) {
-      return res.status(500).json({
-        success: false,
-        error: 'Cashfree credentials missing on backend',
-      });
     }
 
     const { data: deposit, error: depositError } = await supabase
@@ -436,101 +662,18 @@ app.post('/payment/create-order', async (req, res) => {
           ? Number(amount)
           : PLAN_AMOUNT;
 
-    const resolvedReturnUrl =
-      typeof return_url === 'string' && return_url.trim()
-        ? return_url.trim()
-        : `${PAYMENT_BASE_URL}?order_id=${encodeURIComponent(order_id)}&uuid=${encodeURIComponent(user_id)}&amount=${encodeURIComponent(String(resolvedAmount))}`;
-
-    const cashfreePayload = {
-      order_id,
-      order_amount: resolvedAmount,
-      order_currency: 'INR',
-      customer_details: {
-        customer_id: sanitizeCustomerId(user_id),
-        customer_phone: sanitizePhone(phone),
-        customer_name: 'ARB User',
-      },
-      order_meta: {
-        return_url: resolvedReturnUrl,
-      },
-    };
-
-    const cashfreeResponse = await fetch(`${CASHFREE_API_BASE}/pg/orders`, {
-      method: 'POST',
-      headers: cashfreeHeaders(),
-      body: JSON.stringify(cashfreePayload),
+    const cashfreeOrder = await createCashfreeOrder({
+      orderId: order_id,
+      subscriptionId: user_id,
+      amount: resolvedAmount,
+      phone,
     });
 
-    const raw = await cashfreeResponse.text();
-    const parsed = parseJsonSafe(raw);
-
-    if (!cashfreeResponse.ok) {
-      const code = parsed?.code || parsed?.error_code || parsed?.type;
-      const isOrderAlreadyExists =
-        cashfreeResponse.status === 409 &&
-        typeof code === 'string' &&
-        code.toLowerCase().includes('order_already_exists');
-
-      if (isOrderAlreadyExists) {
-        const existingOrderResponse = await fetch(
-          `${CASHFREE_API_BASE}/pg/orders/${encodeURIComponent(order_id)}`,
-          {
-            method: 'GET',
-            headers: cashfreeHeaders(),
-          }
-        );
-
-        const existingRaw = await existingOrderResponse.text();
-        const existingParsed = parseJsonSafe(existingRaw);
-
-        if (existingOrderResponse.ok) {
-          const existingPaymentSessionId = existingParsed?.payment_session_id;
-          if (existingPaymentSessionId) {
-            return res.json({
-              success: true,
-              payment_session_id: existingPaymentSessionId,
-              order_id,
-              cf_order_id: existingParsed?.cf_order_id || null,
-              reused: true,
-            });
-          }
-
-          const existingStatus = String(existingParsed?.order_status || '').toUpperCase();
-          if (existingStatus === 'PAID' || existingStatus === 'SUCCESS') {
-            return res.status(409).json({
-              success: false,
-              error: 'cashfree order already paid',
-              code: 'order_already_paid',
-              order_id,
-              details: existingParsed,
-            });
-          }
-        }
-      }
-
-      console.error('Cashfree create-order failed:', cashfreeResponse.status, raw);
-      return res.status(cashfreeResponse.status).json({
-        success: false,
-        error: 'cashfree create-order failed',
-        details: parsed || raw,
-      });
+    if (!cashfreeOrder.ok) {
+      return res.status(cashfreeOrder.status || 500).json(cashfreeOrder.body);
     }
 
-    const paymentSessionId = parsed?.payment_session_id;
-    if (!paymentSessionId) {
-      return res.status(502).json({
-        success: false,
-        error: 'missing payment_session_id from cashfree',
-        details: parsed || raw,
-      });
-    }
-
-    return res.json({
-      success: true,
-      payment_session_id: paymentSessionId,
-      order_id,
-      cf_order_id: parsed?.cf_order_id || null,
-    });
+    return res.json(cashfreeOrder.body);
   } catch (err) {
     console.error('Unexpected /payment/create-order error:', err);
     return res.status(500).json({ success: false });

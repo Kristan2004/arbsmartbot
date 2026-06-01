@@ -18,7 +18,7 @@ import {
 import * as Application from 'expo-application';
 import * as Haptics from 'expo-haptics';
 import * as Linking from 'expo-linking';
-import axios from 'axios';
+import axios, { isAxiosError } from 'axios';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
@@ -868,8 +868,13 @@ export default function Index() {
       if (!url || typeof url !== 'string') throw new Error('Missing payment URL');
       if (typeof res.data?.subscription_uuid === 'string') setSubscriptionUuid(res.data.subscription_uuid);
       await Linking.openURL(url);
-    } catch {
-      Alert.alert('Payment Error', 'Unable to start payment right now.');
+    } catch (error) {
+      const message = isAxiosError(error)
+        ? error.response?.data?.error || error.message
+        : error instanceof Error
+          ? error.message
+          : 'Unable to start payment right now.';
+      Alert.alert('Payment Error', String(message));
     }
   }, [resolveDeviceId, selectedPlan.code, selectedPlan.price]);
 
