@@ -59,7 +59,7 @@ type OrderCandidate = {
   profitPercent: number;
 };
 
-const BASE_URL = 'https://arbpay.me';
+const BASE_URL = 'https://arbsmartbot-b6rn.onrender.com';
 const APP_SCHEME = 'myapp';
 const PLAN_AMOUNT = 50;
 const PLAN_CODE = 'daily';

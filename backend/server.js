@@ -22,7 +22,7 @@ const DEFAULT_PLAN = PLAN_DAILY;
 const PLAN_AMOUNT = DEFAULT_PLAN.amount;
 const DEFAULT_PHONE = 'NULL';
 const DEPOSIT_UTR_PLACEHOLDER = '00000000000';
-const PAYMENT_BASE_URL = 'https://arbpay.me/';
+const PAYMENT_BASE_URL = process.env.PAYMENT_BASE_URL || 'https://arbpay.me/';
 const CASHFREE_API_BASE = process.env.CASHFREE_API_BASE || 'https://api.cashfree.com';
 const CASHFREE_API_VERSION = process.env.CASHFREE_API_VERSION || '2023-08-01';
 const CASHFREE_APP_ID = process.env.CASHFREE_APP_ID || '';
@@ -322,6 +322,10 @@ app.get('/check', async (req, res) => {
     console.error('Unexpected /check error:', err);
     return res.status(500).json({ active: false });
   }
+});
+
+app.get('/', (_req, res) => {
+  res.json({ ok: true, service: 'arb-smart-bot-backend' });
 });
 
 app.post('/payment/init', async (req, res) => {
