@@ -28,9 +28,9 @@ type Banner = { message: string; tone: Tone };
 type LogEntry = { id: string; message: string; tone: Tone; time: string };
 type PriceStat = { count: number; success: number };
 type BotMsg = { type: string; payload?: Record<string, unknown> };
-type PlanCode = '5d' | '1h';
+type PlanCode = 'daily' | 'monthly';
 type PlanOption = {
-  id: 'pro_5d' | 'quick_1h';
+  id: 'daily' | 'monthly';
   title: string;
   price: number;
   validity: string;
@@ -55,10 +55,10 @@ const BASE_URL = 'https://arbsmartbot-b6rn.onrender.com';
 const APP_SCHEME = 'myapp';
 const BUY_URL = 'https://arbpay.me/#/buy/arb';
 const PLAN_OPTIONS: PlanOption[] = [
-  { id: 'pro_5d', title: 'Pro Plan', price: 50, validity: '5 Days', code: '5d' },
-  { id: 'quick_1h', title: 'Quick Plan', price: 10, validity: '1 Hour', code: '1h' },
+  { id: 'daily', title: 'Daily Plan', price: 50, validity: '1 Day', code: 'daily' },
+  { id: 'monthly', title: 'Monthly Plan', price: 1200, validity: '30 Days', code: 'monthly' },
 ];
-const DEFAULT_PLAN_ID: PlanOption['id'] = 'pro_5d';
+const DEFAULT_PLAN_ID: PlanOption['id'] = 'daily';
 const DEFAULT_PHONE = 'NULL';
 const FIXED_MIN_PROFIT = 2;
 const PLAN_FEATURES = [
@@ -1009,7 +1009,7 @@ export default function Index() {
               <Text style={styles.recheckText}>{checking ? 'Checking...' : 'I Paid, Recheck'}</Text>
             </TouchableOpacity>
             <Text style={styles.meta}>
-              Pricing: {'\u20B9'}50 / 5 Days or {'\u20B9'}10 / 1 Hour
+              Pricing: {'\u20B9'}50 / Day or {'\u20B9'}1200 / Month
             </Text>
             <Text style={styles.meta}>Device ID: {deviceId || 'loading...'}</Text>
             <Text style={styles.meta}>Subscription UUID: {subscriptionUuid || 'creating...'}</Text>

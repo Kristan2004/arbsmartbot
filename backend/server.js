@@ -18,6 +18,12 @@ const PLAN_DAILY = {
   durationMs: 24 * 60 * 60 * 1000,
   label: '1 Day',
 };
+const PLAN_MONTHLY = {
+  code: 'monthly',
+  amount: 1200,
+  durationMs: 30 * 24 * 60 * 60 * 1000,
+  label: '30 Days',
+};
 const DEFAULT_PLAN = PLAN_DAILY;
 const PLAN_AMOUNT = DEFAULT_PLAN.amount;
 const DEFAULT_PHONE = 'NULL';
@@ -37,11 +43,15 @@ const PLAN_CODE_ALIASES = {
   day: PLAN_DAILY.code,
   '1d': PLAN_DAILY.code,
   pro: PLAN_DAILY.code,
+  monthly: PLAN_MONTHLY.code,
+  month: PLAN_MONTHLY.code,
+  '30d': PLAN_MONTHLY.code,
 };
 const PLAN_BY_CODE = {
   [PLAN_DAILY.code]: PLAN_DAILY,
+  [PLAN_MONTHLY.code]: PLAN_MONTHLY,
 };
-const ALL_PLANS = [PLAN_DAILY];
+const ALL_PLANS = [PLAN_DAILY, PLAN_MONTHLY];
 
 const normalizePlanCode = (value) => {
   const key = String(value || '').trim().toLowerCase();
