@@ -665,11 +665,15 @@ export default function Index() {
       } else if (source !== 'launch') {
         await notify(isActive ? 'Subscription active. Bot unlocked.' : 'Subscription still inactive.', isActive ? 'success' : 'danger');
       }
-    } catch {
+    } catch (err) {
       setActive(false);
       setSubscriptionExpiryMs(null);
-      if (source === 'expiry') await notify('Could not verify expiry right now.', 'danger');
-      else if (source !== 'launch') await notify('Unable to verify subscription right now.', 'danger');
+      const detail =
+        isAxiosError(err) && typeof err.response?.data?.error === 'string'
+          ? err.response.data.error
+          : '';
+      if (source === 'expiry') await notify(detail || 'Could not verify expiry right now.', 'danger');
+      else if (source !== 'launch') await notify(detail || 'Unable to verify subscription right now.', 'danger');
     } finally {
       setCheckedOnce(true);
       setChecking(false);

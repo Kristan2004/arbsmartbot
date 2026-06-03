@@ -183,6 +183,72 @@ const buildSuccessUrl = (orderId, subscriptionId) =>
 const buildCheckoutUrl = (paymentSessionId, orderId) =>
   `${PUBLIC_BASE_URL}/payment/checkout?payment_session_id=${encodeURIComponent(paymentSessionId)}&order_id=${encodeURIComponent(orderId)}`;
 
+async function syncPaidCashfreeOrder(orderId, subscriptionId) {
+  if (!orderId || !subscriptionId || !CASHFREE_APP_ID || !CASHFREE_SECRET_KEY) {
+    return { activated: false, error: 'missing order, subscription, or Cashfree credentials' };
+  }
+
+  const cashfreeResponse = await fetch(`${CASHFREE_API_BASE}/pg/orders/${encodeURIComponent(orderId)}`, {
+    method: 'GET',
+    headers: cashfreeHeaders(),
+  });
+
+  const raw = await cashfreeResponse.text();
+  const parsed = parseJsonSafe(raw);
+
+  if (!cashfreeResponse.ok) {
+    console.error('Cashfree order lookup failed:', cashfreeResponse.status, raw);
+    return { activated: false, error: 'cashfree order lookup failed' };
+  }
+
+  const status = String(parsed?.order_status || '').toUpperCase();
+  if (status !== 'PAID' && status !== 'SUCCESS') {
+    return { activated: false, error: `cashfree order is ${status || 'not paid'}` };
+  }
+
+  const { data: deposit, error: depositError } = await supabase
+    .from('deposits')
+    .select('order_id, amount, status, user_id')
+    .eq('order_id', orderId)
+    .eq('user_id', subscriptionId)
+    .limit(1)
+    .maybeSingle();
+
+  if (depositError) {
+    console.error('Failed to load deposit for paid order:', depositError);
+    return { activated: false, error: 'deposit lookup failed' };
+  }
+
+  const paidAmount = Number(deposit?.amount ?? parsed?.order_amount);
+  const selectedPlan = resolvePlan(null, paidAmount);
+  const expiry = getExpiryForPlan(new Date(), selectedPlan).toISOString();
+
+  const { error: activateError } = await setSubscriptionSuccess(
+    subscriptionId,
+    orderId,
+    selectedPlan.amount,
+    expiry
+  );
+
+  if (activateError) {
+    console.error('Failed to activate paid Cashfree order:', activateError);
+    return { activated: false, error: 'subscription activation failed' };
+  }
+
+  await supabase
+    .from('deposits')
+    .update({ status: 'success', UTR: DEPOSIT_UTR_PLACEHOLDER, amount: selectedPlan.amount })
+    .eq('order_id', orderId)
+    .eq('user_id', subscriptionId);
+
+  return {
+    activated: true,
+    plan_code: selectedPlan.code,
+    plan_validity: selectedPlan.label,
+    expiry,
+  };
+}
+
 async function createCashfreeOrder({ orderId, subscriptionId, amount, phone }) {
   if (!CASHFREE_APP_ID || !CASHFREE_SECRET_KEY) {
     return {
@@ -424,7 +490,14 @@ app.get('/check', async (req, res) => {
 
     if (depositError) {
       console.error('Failed to check deposits fallback:', depositError);
-      return res.status(500).json({ active: false, subscription_uuid: subscription.id });
+      return res.json({
+        active: false,
+        subscription_uuid: subscription.id,
+        expiry: lastKnownExpiry ? lastKnownExpiry.toISOString() : null,
+        expiry_raw: subscription.expiry ?? null,
+        remaining_seconds: lastKnownExpiry ? remainingSeconds(lastKnownExpiry) : 0,
+        fallback_error: 'deposit lookup failed',
+      });
     }
 
     if (deposit) {
@@ -527,11 +600,17 @@ app.get('/payment/checkout', (req, res) => {
 </html>`);
 });
 
-app.get('/payment/success', (req, res) => {
+app.get('/payment/success', async (req, res) => {
   const orderId = typeof req.query.order_id === 'string' ? req.query.order_id : '';
   const uuid = typeof req.query.uuid === 'string' ? req.query.uuid : '';
+  let sync = { activated: false };
+  try {
+    sync = await syncPaidCashfreeOrder(orderId, uuid);
+  } catch (err) {
+    console.error('Payment success sync failed:', err);
+  }
   const deepLink =
-    `${APP_RETURN_URL}?order_id=${encodeURIComponent(orderId)}&uuid=${encodeURIComponent(uuid)}`;
+    `${APP_RETURN_URL}?order_id=${encodeURIComponent(orderId)}&uuid=${encodeURIComponent(uuid)}&activated=${sync.activated ? '1' : '0'}`;
 
   return res
     .type('html')
@@ -551,7 +630,7 @@ app.get('/payment/success', (req, res) => {
   <body>
     <main>
       <h1>Payment Complete</h1>
-      <p>Return to ARB Smart Bot to verify your subscription.</p>
+      <p>${sync.activated ? 'Your subscription is active. Return to ARB Smart Bot.' : 'Return to ARB Smart Bot to verify your subscription.'}</p>
       <a href="${escapeHtml(deepLink)}">Open App</a>
     </main>
     <script>window.location.href = ${JSON.stringify(deepLink)};</script>
