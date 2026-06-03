@@ -524,9 +524,11 @@ export default function Index() {
   const expirySyncRef = useRef(false);
   const expiryMsRef = useRef<number | null>(null);
   const subscriptionUuidRef = useRef('');
+  const recoveryUuidRef = useRef('');
 
   const [deviceId, setDeviceId] = useState('');
   const [subscriptionUuid, setSubscriptionUuid] = useState('');
+  const [recoveryUuid, setRecoveryUuid] = useState('');
   const [subscriptionExpiryMs, setSubscriptionExpiryMs] = useState<number | null>(null);
   const [selectedPlanId, setSelectedPlanId] = useState<PlanOption['id']>(DEFAULT_PLAN_ID);
   const [nowMs, setNowMs] = useState(Date.now());
@@ -569,6 +571,10 @@ export default function Index() {
   useEffect(() => {
     subscriptionUuidRef.current = subscriptionUuid;
   }, [subscriptionUuid]);
+
+  useEffect(() => {
+    recoveryUuidRef.current = recoveryUuid;
+  }, [recoveryUuid]);
 
   useEffect(() => {
     minPriceRef.current = minPrice;
@@ -642,13 +648,24 @@ export default function Index() {
     return `device-${Application.applicationId ?? 'arb'}-${Date.now()}`;
   }, []);
 
+  const sendCmd = useCallback((command: 'start' | 'stop' | 'updateConfig' | 'ping', payload?: unknown) => {
+    const js = payload === undefined
+      ? `(function(){if(window.__ARB_BOT__){window.__ARB_BOT__.${command}();}})();true;`
+      : `(function(){if(window.__ARB_BOT__){window.__ARB_BOT__.${command}(${JSON.stringify(payload)});}})();true;`;
+    webRef.current?.injectJavaScript(js);
+  }, []);
+
   const checkSubscription = useCallback(async (source: 'launch' | 'manual' | 'deeplink' | 'expiry' = 'launch') => {
     setChecking(true);
     try {
       const id = deviceRef.current || (await resolveDeviceId());
       deviceRef.current = id;
       setDeviceId(id);
-      const res = await axios.get(`${BASE_URL}/check`, { params: { device_id: id }, timeout: 6000 });
+      const lookupUuid = recoveryUuidRef.current.trim() || subscriptionUuidRef.current || undefined;
+      const res = await axios.get(`${BASE_URL}/check`, {
+        params: { device_id: id, subscription_uuid: lookupUuid },
+        timeout: 6000,
+      });
       const payload = (res.data ?? {}) as CheckPayload;
       const isActive = Boolean(payload.active);
       const nextSubscriptionUuid = typeof payload.subscription_uuid === 'string' ? payload.subscription_uuid : '';
@@ -658,8 +675,13 @@ export default function Index() {
       }
       setActive(isActive);
       setSubscriptionUuid(nextSubscriptionUuid);
+      if (isActive && recoveryUuidRef.current.trim()) setRecoveryUuid('');
       setSubscriptionExpiryMs(expiryMs);
       setNowMs(Date.now());
+      if (!isActive) {
+        sendCmd('stop');
+        setRunning(false);
+      }
       if (source === 'expiry') {
         await notify(isActive ? 'Subscription active. Bot unlocked.' : 'Subscription expired. Please renew.', isActive ? 'success' : 'danger');
       } else if (source !== 'launch') {
@@ -678,14 +700,7 @@ export default function Index() {
       setCheckedOnce(true);
       setChecking(false);
     }
-  }, [notify, resolveDeviceId]);
-
-  const sendCmd = useCallback((command: 'start' | 'stop' | 'updateConfig' | 'ping', payload?: unknown) => {
-    const js = payload === undefined
-      ? `(function(){if(window.__ARB_BOT__){window.__ARB_BOT__.${command}();}})();true;`
-      : `(function(){if(window.__ARB_BOT__){window.__ARB_BOT__.${command}(${JSON.stringify(payload)});}})();true;`;
-    webRef.current?.injectJavaScript(js);
-  }, []);
+  }, [notify, resolveDeviceId, sendCmd]);
 
   const injectBot = useCallback(() => {
     webRef.current?.injectJavaScript(BOT_SCRIPT);
@@ -719,7 +734,7 @@ export default function Index() {
 
   const startBot = useCallback(() => {
     const liveCfg = getLiveCfg();
-    if (!active) {
+    if (!active || (remainingMs !== null && remainingMs <= 0)) {
       Alert.alert('Subscription Required', 'Activate your plan before starting the bot.');
       return;
     }
@@ -735,7 +750,7 @@ export default function Index() {
     setRunning(true);
     pushLog(`Bot started (${liveCfg.speedMs}ms) range \u20B9${liveCfg.minPrice}-\u20B9${liveCfg.maxPrice}`, 'success');
     void notify('Bot started', 'success');
-  }, [active, getLiveCfg, injectBot, notify, pushLog, sendCmd, webReady]);
+  }, [active, getLiveCfg, injectBot, notify, pushLog, remainingMs, sendCmd, webReady]);
 
   const stopBot = useCallback(() => {
     sendCmd('stop');
@@ -819,11 +834,14 @@ export default function Index() {
       expirySyncRef.current = false;
       return;
     }
+    sendCmd('stop');
+    setRunning(false);
+    setActive(false);
     if (expirySyncRef.current) return;
     expirySyncRef.current = true;
     pushLog('Subscription timer ended. Rechecking...', 'neutral');
     void checkSubscription('expiry');
-  }, [checkSubscription, pushLog, remainingMs]);
+  }, [checkSubscription, pushLog, remainingMs, sendCmd]);
 
   useEffect(() => {
     void Linking.getInitialURL().then((url) => { if (url) void handleDeepLink(url); });
@@ -836,6 +854,20 @@ export default function Index() {
     injectBot();
     sendCmd('ping');
   }, [active, injectBot, sendCmd]);
+
+  useEffect(() => {
+    if (active) return;
+    sendCmd('stop');
+    setRunning(false);
+  }, [active, sendCmd]);
+
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(() => {
+      void checkSubscription('launch');
+    }, 60 * 1000);
+    return () => clearInterval(timer);
+  }, [active, checkSubscription]);
 
   useEffect(() => {
     if (!running) return;
@@ -927,8 +959,17 @@ export default function Index() {
             <TouchableOpacity style={styles.buyBtn} onPress={() => void buyNow()}>
               <Text style={styles.buyBtnText}>Buy {selectedPlan.title}</Text>
             </TouchableOpacity>
+            <TextInput
+              style={styles.recoveryInput}
+              value={recoveryUuid}
+              onChangeText={setRecoveryUuid}
+              placeholder="Old subscription UUID"
+              placeholderTextColor="#6f897c"
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
             <TouchableOpacity style={styles.recheckBtn} onPress={() => void checkSubscription('manual')} disabled={checking}>
-              <Text style={styles.recheckText}>{checking ? 'Checking...' : 'I Paid, Recheck'}</Text>
+              <Text style={styles.recheckText}>{checking ? 'Checking...' : 'Recover / Recheck'}</Text>
             </TouchableOpacity>
             <Text style={styles.meta}>
               Pricing: {'\u20B9'}50 / Day or {'\u20B9'}1200 / Month
@@ -1065,6 +1106,7 @@ const styles = StyleSheet.create({
   planText: { color: '#cbdfd6', fontSize: 12, flex: 1 },
   buyBtn: { width: '100%', backgroundColor: '#00ff99', borderRadius: 11, paddingVertical: 12, alignItems: 'center', marginBottom: 8 },
   buyBtnText: { color: '#05120d', fontWeight: '800', fontSize: 15 },
+  recoveryInput: { width: '100%', borderWidth: 1, borderColor: '#294334', backgroundColor: '#0b0f0d', borderRadius: 11, color: '#e9fff3', fontSize: 12, paddingHorizontal: 10, paddingVertical: 9, marginBottom: 8 },
   recheckBtn: { width: '100%', borderRadius: 11, borderWidth: 1, borderColor: '#2e5a45', backgroundColor: '#121f18', paddingVertical: 10, alignItems: 'center', marginBottom: 10 },
   recheckText: { color: '#cceadd', fontWeight: '700', fontSize: 13 },
   meta: { color: '#8ea599', fontSize: 11, textAlign: 'center' },

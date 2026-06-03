@@ -133,6 +133,10 @@ const isFutureDate = (value) => {
   const parsed = parseDateValue(value);
   return parsed !== null && parsed > new Date();
 };
+const isActiveSubscriptionStatus = (value) => {
+  const status = String(value || '').trim().toLowerCase();
+  return status === 'success' || status === 'active' || status === 'paid';
+};
 const remainingSeconds = (value) => {
   const parsed = parseDateValue(value);
   if (!parsed) return 0;
@@ -426,6 +430,30 @@ async function getOrCreateSubscriptionByDevice(deviceId) {
   return { subscription: created, error: null };
 }
 
+async function getSubscriptionByUuid(subscriptionUuid) {
+  if (!subscriptionUuid || typeof subscriptionUuid !== 'string') {
+    return { subscription: null, error: null };
+  }
+
+  const { data, error } = await supabase
+    .from('subscriptions')
+    .select('id, device_id, status, expiry, order_id, amount')
+    .eq('id', subscriptionUuid)
+    .limit(1)
+    .maybeSingle();
+
+  return { subscription: data || null, error };
+}
+
+async function bindSubscriptionToDevice(subscriptionId, deviceId) {
+  if (!subscriptionId || !deviceId) return { error: null };
+  const { error } = await supabase
+    .from('subscriptions')
+    .update({ device_id: deviceId })
+    .eq('id', subscriptionId);
+  return { error };
+}
+
 async function getLatestActivationDeposit(subscriptionUuid) {
   const { data, error } = await supabase
     .from('deposits')
@@ -460,13 +488,32 @@ async function setSubscriptionSuccess(subscriptionId, orderId, amount, expiryIso
 
 app.get('/check', async (req, res) => {
   try {
-    const { device_id } = req.query;
+    const { device_id, subscription_uuid } = req.query;
 
     if (!device_id || typeof device_id !== 'string') {
       return res.status(400).json({ active: false, error: 'device_id is required' });
     }
 
-    const { subscription, error } = await getOrCreateSubscriptionByDevice(device_id);
+    let { subscription, error } =
+      typeof subscription_uuid === 'string'
+        ? await getSubscriptionByUuid(subscription_uuid)
+        : { subscription: null, error: null };
+
+    if (error) {
+      console.error('Failed to resolve subscription by UUID:', error);
+    }
+
+    if (subscription && subscription.device_id !== device_id) {
+      const { error: bindError } = await bindSubscriptionToDevice(subscription.id, device_id);
+      if (bindError) console.error('Failed to bind subscription to current device:', bindError);
+      else subscription.device_id = device_id;
+    }
+
+    if (!subscription) {
+      const resolved = await getOrCreateSubscriptionByDevice(device_id);
+      subscription = resolved.subscription;
+      error = resolved.error;
+    }
 
     if (error || !subscription) {
       console.error('Failed to resolve subscription row:', error);
@@ -475,7 +522,7 @@ app.get('/check', async (req, res) => {
 
     const subscriptionExpiry = parseDateValue(subscription.expiry);
     let lastKnownExpiry = subscriptionExpiry;
-    if (subscription.status === 'success' && isFutureDate(subscriptionExpiry)) {
+    if (isActiveSubscriptionStatus(subscription.status) && isFutureDate(subscriptionExpiry)) {
       return res.json({
         active: true,
         source: 'subscriptions',
