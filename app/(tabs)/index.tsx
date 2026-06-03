@@ -7,7 +7,6 @@ import {
   BackHandler,
   Easing,
   Platform,
-  ScrollView,
   StyleSheet,
   Switch,
   Text,
@@ -25,8 +24,6 @@ import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 type Tone = 'neutral' | 'success' | 'danger';
 type SpeedPreset = '50' | '100' | '200' | 'custom';
 type Banner = { message: string; tone: Tone };
-type LogEntry = { id: string; message: string; tone: Tone; time: string };
-type PriceStat = { count: number; success: number };
 type BotMsg = { type: string; payload?: Record<string, unknown> };
 type PlanCode = 'daily' | 'monthly';
 type PlanOption = {
@@ -299,9 +296,8 @@ const BOT_SCRIPT = `
 
   const reportSkip = (reason, price) => {
     const now = Date.now();
-    if (now - state.lastSkipTs < 1400) return;
+    if (now - state.lastSkipTs < 5000) return;
     state.lastSkipTs = now;
-    post('skipped', { reason, price });
   };
 
   const evaluate = async (candidate, btn) => {
@@ -352,15 +348,8 @@ const BOT_SCRIPT = `
       }
       state.lastBuyTs = Date.now();
       updateLearn(candidate.price, ok);
-      post(ok ? 'bought' : 'buyFailed', {
-        price: candidate.price,
-        reward: candidate.reward,
-        profitPct: candidate.profitPct,
-        bestBucket: bestBucket(),
-      });
     } catch (err) {
       updateLearn(candidate.price, false);
-      post('buyFailed', { price: candidate.price, error: String(err) });
     } finally {
       state.lock = false;
     }
@@ -384,14 +373,12 @@ const BOT_SCRIPT = `
         const profitable = candidate.profitPct >= state.cfg.minProfit;
         if (!inRange || !profitable) continue;
         eligible += 1;
-        post('detected', { price: candidate.price, reward: candidate.reward, profitPct: candidate.profitPct });
         await evaluate(candidate, btn);
         if (scanned >= 8) break;
       }
       const now = Date.now();
-      if (now - state.lastHeartbeatTs > 750) {
+      if (now - state.lastHeartbeatTs > 2000) {
         state.lastHeartbeatTs = now;
-        post('heartbeat', { bestBucket: bestBucket(), scanned, eligible });
       }
     } catch (err) {
       post('engineError', { message: String(err && err.message ? err.message : err) });
@@ -431,7 +418,6 @@ const BOT_SCRIPT = `
 })();
 true;`;
 
-const fmtTime = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max);
 const num = (v: string, d: number) => {
   const cleaned = String(v ?? '').replace(/[^0-9.]/g, '');
@@ -532,7 +518,6 @@ export default function Index() {
   const insets = useSafeAreaInsets();
   const webRef = useRef<WebView>(null);
   const deviceRef = useRef('');
-  const learningRef = useRef<Record<number, PriceStat>>({});
   const soundRef = useRef(false);
   const bannerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastBackPressRef = useRef(0);
@@ -552,7 +537,6 @@ export default function Index() {
   const [webCanGoBack, setWebCanGoBack] = useState(false);
   const [webUrl, setWebUrl] = useState(BUY_URL);
   const [running, setRunning] = useState(false);
-  const [logsOpen, setLogsOpen] = useState(false);
   const [headerMinimized, setHeaderMinimized] = useState(false);
 
   const [minPrice, setMinPrice] = useState('100');
@@ -563,9 +547,6 @@ export default function Index() {
   const [safe, setSafe] = useState(false);
   const [sound, setSound] = useState(false);
 
-  const [stats, setStats] = useState({ ordersDetected: 0, buyAttempts: 0, ordersBought: 0, estimatedProfit: 0 });
-  const [bestRange, setBestRange] = useState('N/A');
-  const [logs, setLogs] = useState<LogEntry[]>([]);
   const [banner, setBanner] = useState<Banner | null>(null);
   const minPriceRef = useRef('100');
   const maxPriceRef = useRef('10000');
@@ -597,7 +578,6 @@ export default function Index() {
     maxPriceRef.current = maxPrice;
   }, [maxPrice]);
 
-  const successRate = useMemo(() => (stats.buyAttempts ? (stats.ordersBought / stats.buyAttempts) * 100 : 0), [stats.buyAttempts, stats.ordersBought]);
   const selectedPlan = useMemo(
     () => PLAN_OPTIONS.find((p) => p.id === selectedPlanId) ?? PLAN_OPTIONS[0],
     [selectedPlanId],
@@ -648,9 +628,7 @@ export default function Index() {
     } catch {}
   }, [showBanner]);
 
-  const pushLog = useCallback((message: string, tone: Tone = 'neutral') => {
-    setLogs((prev) => [{ id: `${Date.now()}-${Math.random()}`, message, tone, time: fmtTime() }, ...prev].slice(0, 80));
-  }, []);
+  const pushLog = useCallback((_message: string, _tone: Tone = 'neutral') => {}, []);
 
   const resolveDeviceId = useCallback(async () => {
     if (Platform.OS === 'android') {
@@ -709,29 +687,6 @@ export default function Index() {
     webRef.current?.injectJavaScript(BOT_SCRIPT);
   }, []);
 
-  const updateLearning = useCallback((price: number, success: boolean) => {
-    const b = Math.floor(price / 50) * 50;
-    const rec = learningRef.current[b] ?? { count: 0, success: 0 };
-    rec.count += 1;
-    if (success) rec.success += 1;
-    learningRef.current[b] = rec;
-
-    let best: number | null = null;
-    let bestRate = -1;
-    let bestCount = -1;
-    for (const [k, v] of Object.entries(learningRef.current)) {
-      if (!v.count) continue;
-      const r = (v.success / v.count) * 100;
-      if (r > bestRate || (r === bestRate && v.count > bestCount)) {
-        best = Number(k);
-        bestRate = r;
-        bestCount = v.count;
-      }
-    }
-    if (best === null) setBestRange('N/A');
-    else setBestRange(`\u20B9${best} - \u20B9${best + 49} (${Math.round(bestRate)}%)`);
-  }, []);
-
   const onWebMessage = useCallback((event: WebViewMessageEvent) => {
     let msg: BotMsg;
     try {
@@ -747,54 +702,16 @@ export default function Index() {
       case 'running':
         setRunning(Boolean(p.running));
         break;
-      case 'bought': {
-        const price = Number(p.price);
-        const reward = Number(p.reward);
-        const ok = Number.isFinite(price) && Number.isFinite(reward);
-        setStats((prev) => ({ ...prev, buyAttempts: prev.buyAttempts + 1, ordersBought: prev.ordersBought + 1, estimatedProfit: prev.estimatedProfit + (ok ? Math.max(reward - price, 0) : 0) }));
-        if (ok) {
-          updateLearning(price, true);
-          pushLog(`Bought \u2705 (\u20B9${price})`, 'success');
-        } else pushLog('Bought \u2705', 'success');
-        void notify('Buy success', 'success');
-        break;
-      }
-      case 'buyFailed': {
-        const price = Number(p.price);
-        setStats((prev) => ({ ...prev, buyAttempts: prev.buyAttempts + 1 }));
-        if (Number.isFinite(price)) {
-          updateLearning(price, false);
-          pushLog(`Buy failed (\u20B9${price})`, 'danger');
-        } else pushLog('Buy failed', 'danger');
-        void notify('Buy failed', 'danger');
-        break;
-      }
-      case 'skipped': {
-        const reason = typeof p.reason === 'string' ? p.reason : 'filtered';
-        const price = Number(p.price);
-        if (Number.isFinite(price)) pushLog(`Skipped (${reason}) \u20B9${price}`, 'neutral');
-        else pushLog(`Skipped (${reason})`, 'neutral');
-        break;
-      }
-      case 'heartbeat': {
-        const b = Number(p.bestBucket);
-        const eligible = Number(p.eligible);
-        if (Number.isFinite(eligible) && eligible > 0) {
-          setStats((prev) => ({ ...prev, ordersDetected: prev.ordersDetected + Math.floor(eligible) }));
-        }
-        if (Number.isFinite(b)) setBestRange(`\u20B9${b} - \u20B9${b + 49}`);
-        break;
-      }
       case 'engineError': {
         const text = typeof p.message === 'string' ? p.message : 'Unknown engine error';
-        pushLog(`Engine error: ${text}`, 'danger');
+        console.warn(`Engine error: ${text}`);
         void notify('Automation engine error', 'danger');
         break;
       }
       default:
         break;
     }
-  }, [notify, pushLog, updateLearning]);
+  }, [notify]);
 
   const startBot = useCallback(() => {
     const liveCfg = getLiveCfg();
@@ -845,11 +762,7 @@ export default function Index() {
   }, []);
 
   const toggleHeader = useCallback(() => {
-    setHeaderMinimized((prev) => {
-      const next = !prev;
-      if (next) setLogsOpen(false);
-      return next;
-    });
+    setHeaderMinimized((prev) => !prev);
   }, []);
 
   const buyNow = useCallback(async () => {
@@ -1073,29 +986,7 @@ export default function Index() {
                 <View style={styles.btnRow}>
                   <TouchableOpacity style={[styles.ctrlBtn, styles.start]} onPress={startBot}><Text style={styles.ctrlText}>START</Text></TouchableOpacity>
                   <TouchableOpacity style={[styles.ctrlBtn, styles.stop]} onPress={stopBot}><Text style={styles.ctrlText}>STOP</Text></TouchableOpacity>
-                  <TouchableOpacity style={[styles.ctrlBtn, styles.logs]} onPress={() => setLogsOpen((v) => !v)}><Text style={styles.ctrlText}>{logsOpen ? 'HIDE' : 'LOGS'}</Text></TouchableOpacity>
                 </View>
-
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.statsScroll}>
-                  <View style={styles.stat}><Text style={styles.statL}>Detected</Text><Text style={styles.statV}>{stats.ordersDetected}</Text></View>
-                  <View style={styles.stat}><Text style={styles.statL}>Bought</Text><Text style={styles.statV}>{stats.ordersBought}</Text></View>
-                  <View style={styles.stat}><Text style={styles.statL}>Success</Text><Text style={styles.statV}>{successRate.toFixed(1)}%</Text></View>
-                  <View style={styles.stat}><Text style={styles.statL}>Profit</Text><Text style={styles.statV}>{'\u20B9'}{stats.estimatedProfit}</Text></View>
-                  <View style={styles.statWide}><Text style={styles.statL}>Best Range</Text><Text style={styles.statV}>{bestRange}</Text></View>
-                </ScrollView>
-
-                {logsOpen ? (
-                  <View style={styles.logPanel}>
-                    <ScrollView showsVerticalScrollIndicator={false}>
-                      {logs.length === 0 ? <Text style={styles.logEmpty}>No activity yet.</Text> : logs.slice(0, 30).map((l) => (
-                        <View key={l.id} style={styles.logRow}>
-                          <Text style={[styles.logMsg, l.tone === 'success' ? styles.ok : l.tone === 'danger' ? styles.bad : styles.neutral]}>{l.message}</Text>
-                          <Text style={styles.logT}>{l.time}</Text>
-                        </View>
-                      ))}
-                    </ScrollView>
-                  </View>
-                ) : null}
               </>
             )}
           </View>
@@ -1205,21 +1096,9 @@ const styles = StyleSheet.create({
   ctrlBtn: { flex: 1, borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
   start: { backgroundColor: '#00c778' },
   stop: { backgroundColor: '#d54548' },
-  logs: { backgroundColor: '#1f3029', borderWidth: 1, borderColor: '#305343' },
   ctrlText: { color: '#f4fff8', fontSize: 12, fontWeight: '800' },
-  statsScroll: { gap: 7, paddingRight: 8 },
-  stat: { minWidth: 88, borderWidth: 1, borderColor: '#234437', borderRadius: 10, backgroundColor: '#0d1512', paddingHorizontal: 8, paddingVertical: 7 },
-  statWide: { minWidth: 150, borderWidth: 1, borderColor: '#234437', borderRadius: 10, backgroundColor: '#0d1512', paddingHorizontal: 8, paddingVertical: 7 },
-  statL: { color: '#91a99e', fontSize: 10, marginBottom: 2 },
-  statV: { color: '#00ff99', fontSize: 13, fontWeight: '700' },
-  logPanel: { maxHeight: 110, borderWidth: 1, borderColor: '#22372c', borderRadius: 10, backgroundColor: '#090d0b', padding: 8 },
-  logEmpty: { color: '#8ba399', fontSize: 12 },
-  logRow: { borderBottomWidth: 1, borderBottomColor: '#16261f', paddingBottom: 5, marginBottom: 5 },
-  logMsg: { fontSize: 12, fontWeight: '500' },
-  neutral: { color: '#c8dfd3' },
   ok: { color: '#42f7ab' },
   bad: { color: '#ff7f82' },
-  logT: { color: '#6d8377', fontSize: 10, marginTop: 1 },
   webWrap: { flex: 1, backgroundColor: '#000' },
   web: { flex: 1, backgroundColor: '#000' },
 });
