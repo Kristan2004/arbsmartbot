@@ -486,6 +486,15 @@ async function setSubscriptionSuccess(subscriptionId, orderId, amount, expiryIso
   return { error };
 }
 
+async function setSubscriptionInactive(subscriptionId) {
+  if (!subscriptionId) return { error: null };
+  const { error } = await supabase
+    .from('subscriptions')
+    .update({ status: 'inactive' })
+    .eq('id', subscriptionId);
+  return { error };
+}
+
 app.get('/check', async (req, res) => {
   try {
     const { device_id, subscription_uuid } = req.query;
@@ -533,6 +542,20 @@ app.get('/check', async (req, res) => {
       });
     }
 
+    if (isActiveSubscriptionStatus(subscription.status) && isValidDate(subscription.expiry)) {
+      const { error: inactiveError } = await setSubscriptionInactive(subscription.id);
+      if (inactiveError) console.error('Failed to mark expired subscription inactive:', inactiveError);
+
+      return res.json({
+        active: false,
+        source: 'subscriptions_expired',
+        subscription_uuid: subscription.id,
+        expiry: subscriptionExpiry ? subscriptionExpiry.toISOString() : null,
+        expiry_raw: subscription.expiry ?? null,
+        remaining_seconds: 0,
+      });
+    }
+
     const { deposit, error: depositError } = await getLatestActivationDeposit(subscription.id);
 
     if (depositError) {
@@ -577,7 +600,7 @@ app.get('/check', async (req, res) => {
     }
 
     if (subscription.status !== 'inactive') {
-      await supabase.from('subscriptions').update({ status: 'inactive' }).eq('id', subscription.id);
+      await setSubscriptionInactive(subscription.id);
     }
 
     return res.json({

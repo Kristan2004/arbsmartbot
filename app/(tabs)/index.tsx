@@ -539,6 +539,7 @@ export default function Index() {
   const [webReady, setWebReady] = useState(false);
   const [webCanGoBack, setWebCanGoBack] = useState(false);
   const [webUrl, setWebUrl] = useState(BUY_URL);
+  const [webResetKey, setWebResetKey] = useState(0);
   const [running, setRunning] = useState(false);
   const [headerMinimized, setHeaderMinimized] = useState(false);
 
@@ -656,6 +657,17 @@ export default function Index() {
     webRef.current?.injectJavaScript(js);
   }, []);
 
+  const forcePaymentScreen = useCallback(() => {
+    sendCmd('stop');
+    setRunning(false);
+    setActive(false);
+    setWebReady(false);
+    setWebCanGoBack(false);
+    setWebUrl(BUY_URL);
+    setHeaderMinimized(false);
+    setWebResetKey((prev) => prev + 1);
+  }, [sendCmd]);
+
   const checkSubscription = useCallback(async (source: 'launch' | 'manual' | 'deeplink' | 'expiry' = 'launch') => {
     setChecking(true);
     try {
@@ -680,8 +692,7 @@ export default function Index() {
       setSubscriptionExpiryMs(expiryMs);
       setNowMs(Date.now());
       if (!isActive) {
-        sendCmd('stop');
-        setRunning(false);
+        forcePaymentScreen();
       }
       if (source === 'expiry') {
         await notify(isActive ? 'Subscription active. Bot unlocked.' : 'Subscription expired. Please renew.', isActive ? 'success' : 'danger');
@@ -701,7 +712,7 @@ export default function Index() {
       setCheckedOnce(true);
       setChecking(false);
     }
-  }, [notify, resolveDeviceId, sendCmd]);
+  }, [forcePaymentScreen, notify, resolveDeviceId]);
 
   const injectBot = useCallback(() => {
     webRef.current?.injectJavaScript(BOT_SCRIPT);
@@ -835,14 +846,12 @@ export default function Index() {
       expirySyncRef.current = false;
       return;
     }
-    sendCmd('stop');
-    setRunning(false);
-    setActive(false);
+    forcePaymentScreen();
     if (expirySyncRef.current) return;
     expirySyncRef.current = true;
     pushLog('Subscription timer ended. Rechecking...', 'neutral');
     void checkSubscription('expiry');
-  }, [checkSubscription, pushLog, remainingMs, sendCmd]);
+  }, [checkSubscription, forcePaymentScreen, pushLog, remainingMs]);
 
   useEffect(() => {
     void Linking.getInitialURL().then((url) => { if (url) void handleDeepLink(url); });
@@ -858,9 +867,8 @@ export default function Index() {
 
   useEffect(() => {
     if (active) return;
-    sendCmd('stop');
-    setRunning(false);
-  }, [active, sendCmd]);
+    forcePaymentScreen();
+  }, [active, forcePaymentScreen]);
 
   useEffect(() => {
     if (!active) return;
@@ -1039,6 +1047,7 @@ export default function Index() {
 
           <View style={styles.webWrap}>
             <WebView
+              key={webResetKey}
               ref={webRef}
               source={{ uri: BUY_URL }}
               style={styles.web}
