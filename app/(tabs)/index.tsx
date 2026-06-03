@@ -22,7 +22,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
 type Tone = 'neutral' | 'success' | 'danger';
-type SpeedPreset = '50' | '100' | '200' | 'custom';
+type SpeedPreset = '25' | '50' | '100' | '200' | 'custom';
 type Banner = { message: string; tone: Tone };
 type BotMsg = { type: string; payload?: Record<string, unknown> };
 type PlanCode = 'daily' | 'monthly';
@@ -51,6 +51,8 @@ type CheckPayload = Record<string, unknown> & {
 const BASE_URL = 'https://arbsmartbot-b6rn.onrender.com';
 const APP_SCHEME = 'myapp';
 const BUY_URL = 'https://arbpay.me/#/buy/arb';
+const WEBVIEW_USER_AGENT =
+  'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36';
 const PLAN_OPTIONS: PlanOption[] = [
   { id: 'daily', title: 'Daily Plan', price: 50, validity: '1 Day', code: 'daily' },
   { id: 'monthly', title: 'Monthly Plan', price: 1200, validity: '30 Days', code: 'monthly' },
@@ -60,7 +62,7 @@ const DEFAULT_PHONE = 'NULL';
 const FIXED_MIN_PROFIT = 2;
 const PLAN_FEATURES = [
   'Live arbpay buy-page automation',
-  'High-speed scanner (50ms to 500ms)',
+  'High-speed scanner (25ms to 500ms)',
   'Smart adaptive filtering by win rate',
   'Safe mode with randomized human-like delays',
   'Device-based access, no login required',
@@ -86,10 +88,10 @@ const BOT_SCRIPT = `
       minPrice: 100,
       maxPrice: 10000,
       minProfit: 2,
-      speedMs: 120,
+      speedMs: 50,
       smartMode: true,
       safeMode: false,
-      cooldownMs: 700,
+      cooldownMs: 120,
     },
   };
 
@@ -120,8 +122,8 @@ const BOT_SCRIPT = `
     out.minPrice = Math.max(0, toNum(out.minPrice, 100));
     out.maxPrice = Math.max(0, toNum(out.maxPrice, 10000));
     out.minProfit = 2;
-    out.speedMs = clamp(toNum(out.speedMs, 120), 50, 500);
-    out.cooldownMs = clamp(toNum(out.cooldownMs, 700), 300, 3000);
+    out.speedMs = clamp(toNum(out.speedMs, 50), 20, 500);
+    out.cooldownMs = clamp(toNum(out.cooldownMs, 120), 80, 3000);
     out.smartMode = !!out.smartMode;
     out.safeMode = !!out.safeMode;
     return out;
@@ -332,8 +334,7 @@ const BOT_SCRIPT = `
         reportSkip('order-shifted', candidate.price);
         return;
       }
-      if (cfg.safeMode) await sleep(rand(50, 300));
-      await sleep(rand(10, 24));
+      if (cfg.safeMode) await sleep(rand(25, 90));
 
       targetBtn = resolveTargetButton(candidate, targetBtn) || resolveTargetButton(candidate, btn);
       if (!targetBtn) {
@@ -374,7 +375,7 @@ const BOT_SCRIPT = `
         if (!inRange || !profitable) continue;
         eligible += 1;
         await evaluate(candidate, btn);
-        if (scanned >= 8) break;
+        if (scanned >= 24) break;
       }
       const now = Date.now();
       if (now - state.lastHeartbeatTs > 2000) {
@@ -383,7 +384,7 @@ const BOT_SCRIPT = `
     } catch (err) {
       post('engineError', { message: String(err && err.message ? err.message : err) });
     } finally {
-      if (state.run) state.timer = setTimeout(tick, state.cfg.speedMs);
+      if (state.run) state.timer = setTimeout(tick, Math.max(0, state.cfg.speedMs));
     }
   };
 
@@ -543,8 +544,8 @@ export default function Index() {
 
   const [minPrice, setMinPrice] = useState('100');
   const [maxPrice, setMaxPrice] = useState('10000');
-  const [speedPreset, setSpeedPreset] = useState<SpeedPreset>('200');
-  const [customSpeed, setCustomSpeed] = useState('200');
+  const [speedPreset, setSpeedPreset] = useState<SpeedPreset>('50');
+  const [customSpeed, setCustomSpeed] = useState('50');
   const [smart, setSmart] = useState(true);
   const [safe, setSafe] = useState(false);
   const [sound, setSound] = useState(false);
@@ -593,7 +594,7 @@ export default function Index() {
     [nowMs, subscriptionExpiryMs],
   );
   const expiryText = useMemo(() => formatRemaining(remainingMs), [remainingMs]);
-  const speedMs = useMemo(() => (speedPreset === 'custom' ? clamp(num(customSpeed, 200), 50, 500) : Number(speedPreset)), [customSpeed, speedPreset]);
+  const speedMs = useMemo(() => (speedPreset === 'custom' ? clamp(num(customSpeed, 50), 20, 500) : Number(speedPreset)), [customSpeed, speedPreset]);
   const cfg = useMemo(() => ({
     minPrice: Math.max(0, num(minPrice, 100)),
     maxPrice: Math.max(0, num(maxPrice, 10000)),
@@ -601,7 +602,7 @@ export default function Index() {
     speedMs,
     smartMode: smart,
     safeMode: safe,
-    cooldownMs: safe ? 1100 : 700,
+    cooldownMs: safe ? 600 : 120,
   }), [maxPrice, minPrice, safe, smart, speedMs]);
   const getLiveCfg = useCallback(() => {
     const liveMin = Math.max(0, num(minPriceRef.current, 100));
@@ -761,7 +762,7 @@ export default function Index() {
 
   const normalizeSpeed = useCallback(() => {
     if (speedPreset !== 'custom') return;
-    setCustomSpeed(String(clamp(num(customSpeed, 200), 50, 500)));
+    setCustomSpeed(String(clamp(num(customSpeed, 50), 20, 500)));
   }, [customSpeed, speedPreset]);
 
   const onMinPriceChange = useCallback((v: string) => {
@@ -1014,7 +1015,7 @@ export default function Index() {
                 <Text style={styles.fixedProfitNote}>Auto profit filter: {FIXED_MIN_PROFIT}%+</Text>
 
                 <View style={styles.speedRow}>
-                  {(['50', '100', '200', 'custom'] as SpeedPreset[]).map((p) => (
+                  {(['25', '50', '100', '200', 'custom'] as SpeedPreset[]).map((p) => (
                     <TouchableOpacity key={p} style={[styles.speedChip, speedPreset === p && styles.speedChipActive]} onPress={() => setSpeedPreset(p)}>
                       <Text style={[styles.speedText, speedPreset === p && styles.speedTextActive]}>{p === 'custom' ? 'Custom' : `${p}ms`}</Text>
                     </TouchableOpacity>
@@ -1041,6 +1042,7 @@ export default function Index() {
               ref={webRef}
               source={{ uri: BUY_URL }}
               style={styles.web}
+              userAgent={WEBVIEW_USER_AGENT}
               javaScriptEnabled
               domStorageEnabled
               mixedContentMode="always"
