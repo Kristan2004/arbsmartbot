@@ -68,6 +68,7 @@ public class MainActivity extends Activity {
     private TextView expiryText;
     private TextView statusText;
     private TextView statsText;
+    private TextView speedText;
     private EditText uuidInput;
     private EditText minInput;
     private EditText maxInput;
@@ -101,8 +102,8 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
-        getWindow().setStatusBarColor(color("#050706"));
-        getWindow().setNavigationBarColor(color("#050706"));
+        getWindow().setStatusBarColor(color("#07100D"));
+        getWindow().setNavigationBarColor(color("#07100D"));
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         deviceId = "android-" + Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
         savedUuid = prefs.getString("uuid", "");
@@ -213,7 +214,7 @@ public class MainActivity extends Activity {
 
     private void buildUi() {
         root = new FrameLayout(this);
-        root.setBackgroundColor(color("#050706"));
+        root.setBackgroundColor(color("#07100D"));
         setContentView(root);
 
         premiumBackdrop = new ImageView(this);
@@ -221,12 +222,12 @@ public class MainActivity extends Activity {
         try {
             premiumBackdrop.setImageBitmap(BitmapFactory.decodeStream(getAssets().open("ui/premium_bg_01.png")));
         } catch (Exception ignored) {
-            premiumBackdrop.setBackgroundColor(color("#050706"));
+            premiumBackdrop.setBackgroundColor(color("#07100D"));
         }
         root.addView(premiumBackdrop, new FrameLayout.LayoutParams(-1, -1));
 
         webView = new WebView(this);
-        webView.setBackgroundColor(color("#050706"));
+        webView.setBackgroundColor(color("#07100D"));
         webView.setClickable(true);
         webView.setLongClickable(true);
         webView.setFocusable(true);
@@ -237,7 +238,7 @@ public class MainActivity extends Activity {
             return false;
         });
         FrameLayout.LayoutParams webParams = frame(-1, -1, Gravity.BOTTOM);
-        webParams.topMargin = dp(176);
+        webParams.topMargin = dp(166);
         root.addView(webView, webParams);
 
         loader = new ProgressBar(this);
@@ -246,7 +247,7 @@ public class MainActivity extends Activity {
         webError = label("Buy page failed to load\nTap to retry", 15, "#F3FFF8", true);
         webError.setGravity(Gravity.CENTER);
         webError.setPadding(dp(18), dp(18), dp(18), dp(18));
-        webError.setBackground(bg("#E60B100E", "#315244", dp(8)));
+        webError.setBackground(bg("#EE0B100E", "#315244", dp(8)));
         webError.setVisibility(View.GONE);
         webError.setOnClickListener(v -> {
             webError.setVisibility(View.GONE);
@@ -264,23 +265,28 @@ public class MainActivity extends Activity {
     private void buildHeader() {
         header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
-        header.setPadding(dp(10), dp(8), dp(10), dp(8));
-        header.setBackground(bg("#FA050807", "#20392D", 0));
+        header.setPadding(dp(12), dp(8), dp(12), dp(8));
+        header.setBackground(bg("#FA07100D", "#234638", 0));
         header.setElevation(dp(12));
-        root.addView(header, frame(-1, dp(176), Gravity.TOP));
+        root.addView(header, frame(-1, dp(166), Gravity.TOP));
 
         LinearLayout top = row();
-        statusText = label("Locked", 15, "#F3FFF8", true);
-        expiryText = label("Expiry: --", 12, "#A8BEB3", true);
-        top.addView(statusText, weight());
-        top.addView(expiryText);
+        LinearLayout titleBox = new LinearLayout(this);
+        titleBox.setOrientation(LinearLayout.VERTICAL);
+        titleBox.addView(label("ARB Smart", 10, "#8AE6AE", true));
+        statusText = label("Locked", 18, "#F7FFF9", true);
+        titleBox.addView(statusText);
+        expiryText = label("Expiry --", 12, "#D9B45D", true);
+        expiryText.setGravity(Gravity.RIGHT);
+        top.addView(titleBox, weight());
+        top.addView(expiryText, margins(dp(118), dp(42), dp(8), 0, 0, 0));
         header.addView(top);
 
         LinearLayout inputs = row();
         minInput = input("100");
         maxInput = input("10000");
-        inputs.addView(box("Min amount", minInput), weight());
-        inputs.addView(box("Max amount", maxInput), weight());
+        inputs.addView(box("Min INR", minInput), weight());
+        inputs.addView(box("Max INR", maxInput), weight());
         header.addView(inputs);
 
         LinearLayout actions = row();
@@ -290,24 +296,31 @@ public class MainActivity extends Activity {
             b.setOnClickListener(v -> {
                 speedMs = value;
                 if (running) updateBot();
+                if (speedText != null) speedText.setText("Speed " + value + "ms");
                 toast("Speed " + value + "ms");
             });
             actions.addView(b, weight());
         }
-        Button buyPage = smallButton("Buy Page");
+        Button buyPage = smallButton("Buy");
+        buyPage.setBackground(bg("#251D09", "#D9B45D", dp(7)));
         buyPage.setOnClickListener(v -> webView.loadUrl(BUY_URL));
         actions.addView(buyPage, weight());
         header.addView(actions);
 
         LinearLayout bottom = row();
-        statsText = label("Scan 0  Fit 0  Buy 0", 11, "#8FA69B", true);
+        LinearLayout statBox = new LinearLayout(this);
+        statBox.setOrientation(LinearLayout.VERTICAL);
+        speedText = label("Speed 10ms", 10, "#D9B45D", true);
+        statsText = label("Scan 0  Fit 0  Buy 0", 11, "#A7BDB1", true);
+        statBox.addView(speedText);
+        statBox.addView(statsText);
         runButton = button("START", "#0AF08A", "#03110A", 15);
         runButton.setOnClickListener(v -> {
             if (running) stopBot();
             else startBot();
         });
-        bottom.addView(statsText, weight());
-        bottom.addView(runButton, margins(dp(118), dp(42), dp(8), 0, 0, 0));
+        bottom.addView(statBox, weight());
+        bottom.addView(runButton, margins(dp(116), dp(42), dp(8), 0, 0, 0));
         header.addView(bottom);
     }
 
@@ -318,7 +331,7 @@ public class MainActivity extends Activity {
         payScreen = new LinearLayout(this);
         payScreen.setOrientation(LinearLayout.VERTICAL);
         payScreen.setGravity(Gravity.CENTER_VERTICAL);
-        payScreen.setPadding(dp(18), dp(28), dp(18), dp(18));
+        payScreen.setPadding(dp(18), dp(22), dp(18), dp(18));
         payScreen.setBackgroundColor(Color.TRANSPARENT);
         payScroll.addView(payScreen);
         root.addView(payScroll, frame(-1, -1, Gravity.CENTER));
@@ -326,42 +339,55 @@ public class MainActivity extends Activity {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(16), dp(18), dp(16), dp(16));
-        card.setBackground(bg("#E8050807", "#2B4B3A", dp(12)));
+        card.setBackground(bg("#EE07100D", "#315244", dp(12)));
         payScreen.addView(card, margins(-1, -2, 0, 0, 0, 0));
 
-        card.addView(label("ARB Smart", 15, "#0AF08A", true));
-        card.addView(label("Choose Access", 34, "#F3FFF8", true));
-        TextView sub = label("Buy a plan or enter your subscription UUID. Once verified, this device remembers it until expiry.", 14, "#A8BEB3", false);
-        sub.setPadding(0, dp(8), 0, dp(14));
+        LinearLayout hero = row();
+        LinearLayout heroText = new LinearLayout(this);
+        heroText.setOrientation(LinearLayout.VERTICAL);
+        heroText.addView(label("ARB Smart", 13, "#8AE6AE", true));
+        heroText.addView(label("Access", 34, "#F7FFF9", true));
+        TextView chip = label("Native Bot", 11, "#07100D", true);
+        chip.setGravity(Gravity.CENTER);
+        chip.setBackground(bg("#D9B45D", "#D9B45D", dp(999)));
+        hero.addView(heroText, weight());
+        hero.addView(chip, margins(dp(92), dp(34), dp(8), 0, 0, 0));
+        card.addView(hero);
+
+        TextView sub = label("Buy a plan or verify your subscription UUID.", 14, "#A8BEB3", false);
+        sub.setPadding(0, dp(8), 0, dp(12));
         card.addView(sub);
 
         dailyButton = planButton("Daily Plan\nINR 50\n1 Day");
         monthlyButton = planButton("Monthly Plan\nINR 1200\n30 Days");
         dailyButton.setOnClickListener(v -> selectPlan("daily", 50));
         monthlyButton.setOnClickListener(v -> selectPlan("monthly", 1200));
-        card.addView(dailyButton, margins(-1, dp(88), 0, dp(6), 0, dp(6)));
-        card.addView(monthlyButton, margins(-1, dp(88), 0, dp(6), 0, dp(6)));
+        LinearLayout plans = row();
+        plans.addView(dailyButton, weight());
+        plans.addView(monthlyButton, weight());
+        card.addView(plans, margins(-1, dp(92), 0, dp(4), 0, dp(8)));
         selectPlan("daily", 50);
 
         Button pay = button("BUY PLAN", "#0AF08A", "#03110A", 16);
         pay.setOnClickListener(v -> startPayment());
-        card.addView(pay, margins(-1, dp(50), 0, dp(14), 0, 0));
+        card.addView(pay, margins(-1, dp(52), 0, dp(10), 0, 0));
 
         uuidInput = input("");
         uuidInput.setHint("Subscription UUID");
         uuidInput.setHintTextColor(color("#71877C"));
-        card.addView(box("Already have UUID", uuidInput), margins(-1, dp(66), 0, dp(12), 0, 0));
+        card.addView(box("Subscription UUID", uuidInput), margins(-1, dp(64), 0, dp(12), 0, 0));
 
-        Button verify = button("VERIFY UUID", "#101613", "#D8F4E5", 14);
+        LinearLayout verifyRow = row();
+        Button verify = button("VERIFY", "#101613", "#D8F4E5", 14);
         verify.setOnClickListener(v -> {
             savedUuid = uuidInput.getText().toString().trim();
             checkSubscription(false);
         });
-        card.addView(verify, margins(-1, dp(48), 0, dp(8), 0, 0));
-
-        Button refresh = button("I PAID, CHECK AGAIN", "#101613", "#D8F4E5", 14);
+        Button refresh = button("CHECK", "#101613", "#D8F4E5", 14);
         refresh.setOnClickListener(v -> checkSubscription(false));
-        card.addView(refresh, margins(-1, dp(48), 0, dp(8), 0, 0));
+        verifyRow.addView(verify, weight());
+        verifyRow.addView(refresh, weight());
+        card.addView(verifyRow, margins(-1, dp(52), 0, dp(8), 0, 0));
 
         TextView device = label("Device: " + deviceId, 11, "#7F948A", false);
         device.setPadding(0, dp(12), 0, 0);
@@ -421,6 +447,7 @@ public class MainActivity extends Activity {
         injectBot();
         webView.evaluateJavascript("if(window.__ARB_SMART_BOT__){window.__ARB_SMART_BOT__.start(" + config() + ");} true;", null);
         running = true;
+        if (statusText != null) statusText.setText("Running");
         runButton.setText("STOP");
         runButton.setBackground(bg("#EF4444", "#EF4444", dp(8)));
     }
@@ -432,6 +459,7 @@ public class MainActivity extends Activity {
             runButton.setText("START");
             runButton.setBackground(bg("#0AF08A", "#0AF08A", dp(8)));
         }
+        if (statusText != null && active) statusText.setText("Bot Ready");
     }
 
     private void updateBot() {
@@ -502,13 +530,13 @@ public class MainActivity extends Activity {
     private void updateExpiryText() {
         if (expiryText == null) return;
         if (expiryMs <= 0) {
-            expiryText.setText("Expiry: --");
+            expiryText.setText("Expiry --");
             return;
         }
         long left = Math.max(0L, (expiryMs - System.currentTimeMillis()) / 1000L);
         long h = left / 3600L;
         long m = (left % 3600L) / 60L;
-        expiryText.setText("Expiry: " + h + "h " + m + "m");
+        expiryText.setText(h + "h " + m + "m left");
     }
 
     private void startPayment() {
@@ -584,7 +612,7 @@ public class MainActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(3), 0, dp(3));
+        row.setPadding(0, dp(2), 0, dp(2));
         return row;
     }
 
@@ -592,8 +620,8 @@ public class MainActivity extends Activity {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(10), dp(5), dp(10), dp(3));
-        box.setBackground(bg("#0B100E", "#20382D", dp(8)));
-        box.addView(label(title, 10, "#71DB9F", true));
+        box.setBackground(bg("#0B1210", "#244234", dp(7)));
+        box.addView(label(title, 10, "#8AE6AE", true));
         box.addView(input);
         return box;
     }
@@ -601,8 +629,8 @@ public class MainActivity extends Activity {
     private EditText input(String text) {
         EditText input = new EditText(this);
         input.setText(text);
-        input.setTextColor(color("#F1FFF7"));
-        input.setTextSize(16);
+        input.setTextColor(color("#F7FFF9"));
+        input.setTextSize(15);
         input.setSingleLine(true);
         input.setPadding(0, 0, 0, 0);
         input.setBackgroundColor(Color.TRANSPARENT);
@@ -611,11 +639,11 @@ public class MainActivity extends Activity {
     }
 
     private Button planButton(String text) {
-        return button(text, "#0C1210", "#F3FFF8", 16);
+        return button(text, "#0D1512", "#F7FFF9", 15);
     }
 
     private Button smallButton(String text) {
-        return button(text, "#0B100E", "#D8F4E5", 11);
+        return button(text, "#0B1210", "#D8F4E5", 11);
     }
 
     private Button button(String text, String bg, String fg, int size) {
