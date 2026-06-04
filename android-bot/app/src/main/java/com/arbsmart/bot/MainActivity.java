@@ -80,7 +80,7 @@ public class MainActivity extends Activity {
     private String savedUuid = "";
     private String planCode = "daily";
     private int planAmount = 50;
-    private int speedMs = 180;
+    private int speedMs = 90;
     private long expiryMs = 0L;
     private boolean active = false;
     private boolean running = false;
@@ -290,7 +290,7 @@ public class MainActivity extends Activity {
         header.addView(inputs);
 
         LinearLayout actions = row();
-        int[] speeds = new int[]{120, 180, 260, 400};
+        int[] speeds = new int[]{70, 90, 120, 180};
         for (int value : speeds) {
             Button b = smallButton(value + "ms");
             b.setOnClickListener(v -> {
@@ -310,7 +310,7 @@ public class MainActivity extends Activity {
         LinearLayout bottom = row();
         LinearLayout statBox = new LinearLayout(this);
         statBox.setOrientation(LinearLayout.VERTICAL);
-        speedText = label("Speed 180ms", 10, "#D9B45D", true);
+        speedText = label("Speed 90ms", 10, "#D9B45D", true);
         statsText = label("Scan 0  Fit 0  Buy 0", 11, "#A7BDB1", true);
         statBox.addView(speedText);
         statBox.addView(statsText);
@@ -743,12 +743,12 @@ public class MainActivity extends Activity {
 
     private static final String BOT_JS =
             "(function(){if(window.__ARB_SMART_BOT__){window.__ARB_SMART_BOT__.ping();return true;}" +
-            "var s={run:false,timer:null,lock:false,lastBuy:0,lastTab:0,lastReport:0,lastFlip:0,afterClick:0,stats:{scanned:0,eligible:0,clicked:0},cfg:{minPrice:100,maxPrice:10000,speedMs:180,cooldownMs:650,tabDelayMs:220,settleMs:1400,scanLimit:45}};" +
+            "var s={run:false,timer:null,lock:false,lastBuy:0,lastTab:0,lastReport:0,lastFlip:0,afterClick:0,stats:{scanned:0,eligible:0,clicked:0},cfg:{minPrice:100,maxPrice:10000,speedMs:90,cooldownMs:180,tabDelayMs:95,settleMs:520,scanLimit:80}};" +
             "function post(t,p){try{ARBBridge.post(JSON.stringify({type:t,payload:p||{}}));}catch(e){}}" +
             "function txt(e){return String(e&&(e.innerText||e.textContent)||'').replace(/\\s+/g,' ').trim();}" +
             "function vis(e){if(!e||e.disabled)return false;var r=e.getBoundingClientRect?e.getBoundingClientRect():null;return !!r&&r.width>0&&r.height>0&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}" +
             "function num(v,d){var x=Number(String(v||'').replace(/[^0-9.]/g,''));return isFinite(x)?x:d;}" +
-            "function norm(c){c=c||{};s.cfg.minPrice=Math.max(0,num(c.minPrice,100));s.cfg.maxPrice=Math.max(0,num(c.maxPrice,10000));s.cfg.speedMs=Math.min(Math.max(num(c.speedMs,180),120),700);}" +
+            "function norm(c){c=c||{};s.cfg.minPrice=Math.max(0,num(c.minPrice,100));s.cfg.maxPrice=Math.max(0,num(c.maxPrice,10000));s.cfg.speedMs=Math.min(Math.max(num(c.speedMs,90),70),400);}" +
             "function fire(e,k,x,y){try{e.dispatchEvent(new MouseEvent(k,{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window}));}catch(z){try{e.dispatchEvent(new Event(k,{bubbles:true,cancelable:true}));}catch(q){}}}" +
             "function click(e){try{if(!vis(e))return false;var r=e.getBoundingClientRect(),x=Math.max(1,Math.min(innerWidth-2,r.left+r.width/2)),y=Math.max(1,Math.min(innerHeight-2,r.top+r.height/2));['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(k){fire(e,k,x,y);});if(e.click)e.click();return true;}catch(x){return false;}}" +
             "function byText(name){name=String(name).toLowerCase();return Array.prototype.slice.call(document.querySelectorAll('button,[role=\"tab\"],a,div,span')).filter(function(e){return vis(e)&&txt(e).toLowerCase()===name;})[0]||null;}" +
@@ -759,8 +759,8 @@ public class MainActivity extends Activity {
             "function buyCount(e){return e&&e.querySelectorAll?Array.prototype.slice.call(e.querySelectorAll('button,[role=\"button\"],a,div[role=\"button\"]')).filter(isBuy).length:0;}" +
             "function liveButton(b){try{var r=b.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2,e=document.elementFromPoint(x,y);while(e&&e!==document.body&&!isBuy(e))e=e.parentElement;return isBuy(e)?e:b;}catch(x){return b;}}" +
             "function jitter(n){return Math.floor(Math.random()*n);}" +
-            "function loading(){return Array.prototype.slice.call(document.querySelectorAll('.van-loading,.van-toast,.van-overlay,.van-toast__loading')).some(vis);}" +
-            "function schedule(ms){if(!s.run)return;if(s.timer)clearTimeout(s.timer);s.timer=setTimeout(scan,Math.max(80,ms+jitter(140)-35));}" +
+            "function loading(){return Array.prototype.slice.call(document.querySelectorAll('.van-loading,.van-overlay,.van-toast__loading')).some(vis);}" +
+            "function schedule(ms){if(!s.run)return;if(s.timer)clearTimeout(s.timer);s.timer=setTimeout(scan,Math.max(55,ms+jitter(70)-20));}" +
             "function paymentPage(){var t=txt(document.body).toLowerCase();return t.indexOf('select method payment')>=0||t.indexOf('please select payment account')>=0||t.indexOf('use another account')>=0;}" +
             "function stopLocal(reason){s.run=false;s.lock=false;if(s.timer)clearTimeout(s.timer);s.timer=null;post('running',{running:false,reason:reason||''});}" +
             "function values(t){var a=[],r=/(?:\\u20B9|rs\\.?|inr)?\\s*([0-9]+(?:\\.[0-9]+)?)/gi,m;while((m=r.exec(t))){var x=Number(m[1]);if(isFinite(x)&&x>0)a.push(x);}return a;}" +
@@ -772,7 +772,7 @@ public class MainActivity extends Activity {
             "function same(a,b){return a&&b&&Math.abs(a.price-b.price)<=0.01;}" +
             "function inRange(p){return isFinite(p)&&p+0.01>=s.cfg.minPrice&&p-0.01<=s.cfg.maxPrice;}" +
             "function report(extra){var now=Date.now();if(now-s.lastReport<350&&!extra)return;s.lastReport=now;post('stats',Object.assign({},s.stats,extra||{}));}" +
-            "function scanRows(){if(paymentPage()){post('paymentDetected',{});stopLocal('payment');return true;}if(loading()||Date.now()<s.afterClick)return false;var bs=buys();s.stats.scanned+=bs.length;for(var i=0;i<bs.length&&i<s.cfg.scanLimit;i++){var b=liveButton(bs[i]),o=parseOrder(b);if(!o)continue;if(!inRange(o.price))continue;s.stats.eligible++;if(s.lock||Date.now()-s.lastBuy<s.cfg.cooldownMs)continue;var live=liveButton(o.button),recheck=parseOrder(live);if(!same(o,recheck))continue;if(!inRange(recheck.price))continue;s.lock=true;var ok=click(recheck.button);s.lastBuy=Date.now();s.afterClick=s.lastBuy+s.cfg.settleMs+jitter(650);s.lock=false;if(ok){s.stats.clicked++;report({lastPrice:recheck.price,lastReward:recheck.reward});return true;}}return false;}" +
-            "function scan(){if(!s.run)return;try{var acted=scanRows();if(!s.run)return;if(acted){report();schedule(s.cfg.settleMs);return;}prep();setTimeout(function(){try{var hit=false;if(s.run){hit=scanRows();report();}}catch(e){s.lock=false;post('engineError',{message:String(e&&e.message?e.message:e)});}finally{if(s.run)schedule(hit?s.cfg.settleMs:s.cfg.speedMs);}},s.cfg.tabDelayMs+jitter(120));}catch(e){s.lock=false;post('engineError',{message:String(e&&e.message?e.message:e)});schedule(s.cfg.speedMs+250);}}" +
+            "function scanRows(){if(paymentPage()){post('paymentDetected',{});stopLocal('payment');return true;}if(loading()||Date.now()<s.afterClick)return false;var bs=buys();s.stats.scanned+=bs.length;for(var i=0;i<bs.length&&i<s.cfg.scanLimit;i++){var b=liveButton(bs[i]),o=parseOrder(b);if(!o)continue;if(!inRange(o.price))continue;s.stats.eligible++;if(s.lock||Date.now()-s.lastBuy<s.cfg.cooldownMs)continue;var live=liveButton(o.button),recheck=parseOrder(live);if(!same(o,recheck))continue;if(!inRange(recheck.price))continue;s.lock=true;var ok=click(recheck.button);s.lastBuy=Date.now();s.afterClick=s.lastBuy+s.cfg.settleMs+jitter(260);s.lock=false;if(ok){s.stats.clicked++;report({lastPrice:recheck.price,lastReward:recheck.reward});return true;}}return false;}" +
+            "function scan(){if(!s.run)return;try{var acted=scanRows();if(!s.run)return;if(acted){report();schedule(s.cfg.settleMs);return;}prep();setTimeout(function(){try{var hit=false;if(s.run){hit=scanRows();report();}}catch(e){s.lock=false;post('engineError',{message:String(e&&e.message?e.message:e)});}finally{if(s.run)schedule(hit?s.cfg.settleMs:s.cfg.speedMs);}},s.cfg.tabDelayMs+jitter(55));}catch(e){s.lock=false;post('engineError',{message:String(e&&e.message?e.message:e)});schedule(s.cfg.speedMs+150);}}" +
             "window.__ARB_SMART_BOT__={start:function(c){norm(c);if(s.run)return;s.run=true;post('running',{running:true});scan();},stop:function(){stopLocal('manual');report();},updateConfig:function(c){norm(c);report();},ping:function(){post('ready',{href:location.href});}};post('ready',{href:location.href});return true;})();";
 }
