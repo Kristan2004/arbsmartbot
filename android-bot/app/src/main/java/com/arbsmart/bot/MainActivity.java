@@ -80,10 +80,11 @@ public class MainActivity extends Activity {
     private String savedUuid = "";
     private String planCode = "daily";
     private int planAmount = 50;
-    private int speedMs = 90;
+    private int speedMs = 80;
     private long expiryMs = 0L;
     private boolean active = false;
     private boolean running = false;
+    private boolean pendingStart = false;
 
     private final Runnable expiryLoop = new Runnable() {
         @Override
@@ -127,7 +128,15 @@ public class MainActivity extends Activity {
         super.onNewIntent(intent);
         setIntent(intent);
         Uri uri = intent.getData();
-        if (uri != null && "myapp".equalsIgnoreCase(uri.getScheme())) checkSubscription(false);
+        if (uri != null && "myapp".equalsIgnoreCase(uri.getScheme())) {
+            String uuid = uri.getQueryParameter("uuid");
+            if (uuid != null && uuid.trim().length() > 0) {
+                savedUuid = uuid.trim();
+                prefs.edit().putString("uuid", savedUuid).apply();
+                if (uuidInput != null) uuidInput.setText(savedUuid);
+            }
+            checkSubscription(false);
+        }
     }
 
     @Override
@@ -156,6 +165,7 @@ public class MainActivity extends Activity {
         s.setLoadWithOverviewMode(false);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         s.setJavaScriptCanOpenWindowsAutomatically(true);
+        s.setTextZoom(100);
         s.setSupportZoom(false);
         s.setBuiltInZoomControls(false);
         s.setAllowContentAccess(true);
@@ -166,6 +176,8 @@ public class MainActivity extends Activity {
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
         webView.setWebChromeClient(new WebChromeClient());
         webView.addJavascriptInterface(new Bridge(), "ARBBridge");
+        webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        webView.setScrollBarStyle(View.SCROLLBARS_INSIDE_OVERLAY);
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
@@ -181,12 +193,16 @@ public class MainActivity extends Activity {
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
                 loader.setVisibility(View.VISIBLE);
                 webError.setVisibility(View.GONE);
+                if (running && statusText != null) statusText.setText("Loading Buy Page");
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
                 loader.setVisibility(View.GONE);
                 injectBot();
+                if (active && (running || pendingStart)) {
+                    handler.postDelayed(() -> startBotEngine(false), 180);
+                }
             }
 
             @Override
@@ -201,7 +217,15 @@ public class MainActivity extends Activity {
 
     private boolean handleExternalUrl(String url) {
         if (url == null) return false;
-        if (url.startsWith("upi:") || url.startsWith("intent:") || url.startsWith("phonepe:") || url.startsWith("paytmmp:")) {
+        if (url.startsWith("intent:")) {
+            try {
+                startActivity(Intent.parseUri(url, Intent.URI_INTENT_SCHEME));
+            } catch (Exception ignored) {
+                toast("Payment app not found");
+            }
+            return true;
+        }
+        if (url.startsWith("upi:") || url.startsWith("phonepe:") || url.startsWith("paytmmp:")) {
             try {
                 startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
             } catch (Exception ignored) {
@@ -238,7 +262,7 @@ public class MainActivity extends Activity {
             return false;
         });
         FrameLayout.LayoutParams webParams = frame(-1, -1, Gravity.BOTTOM);
-        webParams.topMargin = dp(166);
+        webParams.topMargin = dp(156);
         root.addView(webView, webParams);
 
         loader = new ProgressBar(this);
@@ -265,10 +289,10 @@ public class MainActivity extends Activity {
     private void buildHeader() {
         header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
-        header.setPadding(dp(12), dp(8), dp(12), dp(8));
+        header.setPadding(dp(12), dp(7), dp(12), dp(7));
         header.setBackground(bg("#FA07100D", "#234638", 0));
         header.setElevation(dp(12));
-        root.addView(header, frame(-1, dp(166), Gravity.TOP));
+        root.addView(header, frame(-1, dp(156), Gravity.TOP));
 
         LinearLayout top = row();
         LinearLayout titleBox = new LinearLayout(this);
@@ -279,7 +303,7 @@ public class MainActivity extends Activity {
         expiryText = label("Expiry --", 12, "#D9B45D", true);
         expiryText.setGravity(Gravity.RIGHT);
         top.addView(titleBox, weight());
-        top.addView(expiryText, margins(dp(118), dp(42), dp(8), 0, 0, 0));
+        top.addView(expiryText, margins(dp(124), -2, dp(8), 0, 0, 0));
         header.addView(top);
 
         LinearLayout inputs = row();
@@ -290,7 +314,7 @@ public class MainActivity extends Activity {
         header.addView(inputs);
 
         LinearLayout actions = row();
-        int[] speeds = new int[]{70, 90, 120, 180};
+        int[] speeds = new int[]{60, 80, 120, 170};
         for (int value : speeds) {
             Button b = smallButton(value + "ms");
             b.setOnClickListener(v -> {
@@ -310,7 +334,7 @@ public class MainActivity extends Activity {
         LinearLayout bottom = row();
         LinearLayout statBox = new LinearLayout(this);
         statBox.setOrientation(LinearLayout.VERTICAL);
-        speedText = label("Speed 90ms", 10, "#D9B45D", true);
+        speedText = label("Speed 80ms", 10, "#D9B45D", true);
         statsText = label("Scan 0  Fit 0  Buy 0", 11, "#A7BDB1", true);
         statBox.addView(speedText);
         statBox.addView(statsText);
@@ -339,14 +363,14 @@ public class MainActivity extends Activity {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(16), dp(18), dp(16), dp(16));
-        card.setBackground(bg("#EE07100D", "#315244", dp(12)));
+        card.setBackground(bg("#EE07100D", "#315244", dp(8)));
         payScreen.addView(card, margins(-1, -2, 0, 0, 0, 0));
 
         LinearLayout hero = row();
         LinearLayout heroText = new LinearLayout(this);
         heroText.setOrientation(LinearLayout.VERTICAL);
         heroText.addView(label("ARB Smart", 13, "#8AE6AE", true));
-        heroText.addView(label("Access", 34, "#F7FFF9", true));
+        heroText.addView(label("Plans", 34, "#F7FFF9", true));
         TextView chip = label("Native Bot", 11, "#07100D", true);
         chip.setGravity(Gravity.CENTER);
         chip.setBackground(bg("#D9B45D", "#D9B45D", dp(999)));
@@ -354,7 +378,7 @@ public class MainActivity extends Activity {
         hero.addView(chip, margins(dp(92), dp(34), dp(8), 0, 0, 0));
         card.addView(hero);
 
-        TextView sub = label("Buy a plan or verify your subscription UUID.", 14, "#A8BEB3", false);
+        TextView sub = label("Buy a plan or verify your subscription UUID. The app saves verified access to this device.", 14, "#A8BEB3", false);
         sub.setPadding(0, dp(8), 0, dp(12));
         card.addView(sub);
 
@@ -440,20 +464,33 @@ public class MainActivity extends Activity {
             toast("Invalid amount range");
             return;
         }
+        running = true;
+        pendingStart = true;
+        if (statusText != null) statusText.setText("Loading Buy Page");
+        runButton.setText("STOP");
+        runButton.setBackground(bg("#EF4444", "#EF4444", dp(8)));
         if (!String.valueOf(webView.getUrl()).contains("/#/buy/arb")) {
             webView.loadUrl(BUY_URL);
             toast("Opening buy page");
+            return;
         }
+        startBotEngine(true);
+    }
+
+    private void startBotEngine(boolean announce) {
+        if (!active || !running) return;
         injectBot();
+        pendingStart = false;
         webView.evaluateJavascript("if(window.__ARB_SMART_BOT__){window.__ARB_SMART_BOT__.start(" + config() + ");} true;", null);
-        running = true;
         if (statusText != null) statusText.setText("Running");
         runButton.setText("STOP");
         runButton.setBackground(bg("#EF4444", "#EF4444", dp(8)));
+        if (announce) toast("Bot started");
     }
 
     private void stopBot() {
         running = false;
+        pendingStart = false;
         if (webView != null) webView.evaluateJavascript("if(window.__ARB_SMART_BOT__){window.__ARB_SMART_BOT__.stop();} true;", null);
         if (runButton != null) {
             runButton.setText("START");
@@ -714,8 +751,15 @@ public class MainActivity extends Activity {
                     JSONObject msg = new JSONObject(raw);
                     String type = msg.optString("type");
                     JSONObject payload = msg.optJSONObject("payload");
+                    if ("ready".equals(type) && payload != null) {
+                        if (statusText != null && active && !running) statusText.setText("Bot Ready");
+                        if (active && pendingStart) {
+                            handler.postDelayed(() -> startBotEngine(false), 80);
+                        }
+                    }
                     if ("running".equals(type) && payload != null) {
                         running = payload.optBoolean("running", running);
+                        pendingStart = false;
                         if (runButton != null) {
                             runButton.setText(running ? "STOP" : "START");
                             runButton.setBackground(bg(running ? "#EF4444" : "#0AF08A", running ? "#EF4444" : "#0AF08A", dp(8)));
@@ -723,10 +767,13 @@ public class MainActivity extends Activity {
                         if (statusText != null && active) statusText.setText(running ? "Running" : "Bot Ready");
                     }
                     if ("stats".equals(type) && payload != null) {
-                        statsText.setText("Scan " + payload.optInt("scanned") + "  Fit " + payload.optInt("eligible") + "  Buy " + payload.optInt("clicked"));
+                        int last = payload.optInt("lastPrice", 0);
+                        String suffix = last > 0 ? "  Last " + last : "";
+                        statsText.setText("Scan " + payload.optInt("scanned") + "  Fit " + payload.optInt("eligible") + "  Buy " + payload.optInt("clicked") + suffix);
                     }
                     if ("paymentDetected".equals(type)) {
                         running = false;
+                        pendingStart = false;
                         if (runButton != null) {
                             runButton.setText("START");
                             runButton.setBackground(bg("#0AF08A", "#0AF08A", dp(8)));
@@ -734,7 +781,10 @@ public class MainActivity extends Activity {
                         if (statusText != null) statusText.setText("Payment Found");
                         toast("Payment page detected");
                     }
-                    if ("engineError".equals(type)) toast("Bot engine error");
+                    if ("engineError".equals(type)) {
+                        if (statusText != null && active) statusText.setText("Engine Recovery");
+                        toast("Bot engine recovering");
+                    }
                 } catch (Exception ignored) {
                 }
             });
@@ -778,25 +828,32 @@ public class MainActivity extends Activity {
 
     private static final String BOT_JS_SITE =
             "(function(){if(window.__ARB_SMART_BOT__&&window.__ARB_SMART_BOT__.siteDom){window.__ARB_SMART_BOT__.ping();return true;}" +
-            "var SEL={tabs:'.x-buyList-filter .item',active:'active',list:'.x-buyList-list',row:'.item.mb32',buy:'button.x-btn',nav:'.van-nav-bar__title',payment:'Select Method Payment'};" +
-            "var s={run:false,timer:null,scanTimer:null,observer:null,tab:0,lastReport:0,lastClick:0,lastObs:0,stats:{scanned:0,eligible:0,clicked:0},cfg:{minPrice:100,maxPrice:10000,speedMs:90,cycleDelay:45,postClickWait:250}};" +
+            "var SEL={tabs:'.x-buyList-filter .item',active:'active',list:'.x-buyList-list',row:'.item.mb32,[maximumamount],[minimumamount]',buy:'button.x-btn,button,[role=\"button\"]',nav:'.van-nav-bar__title',payment:'Select Method Payment'};" +
+            "var s={run:false,timer:null,scanTimer:null,observer:null,tab:0,lastReport:0,lastClick:0,lastObs:0,lastFail:0,clicked:{},stats:{scanned:0,eligible:0,clicked:0},cfg:{minPrice:100,maxPrice:10000,speedMs:80,cycleDelay:36,postClickWait:150,failCooldown:950}};" +
             "function post(t,p){try{ARBBridge.post(JSON.stringify({type:t,payload:p||{}}));}catch(e){}}" +
             "function text(e){return String(e&&(e.innerText||e.textContent)||'').replace(/\\s+/g,' ').trim();}" +
+            "function vis(e){if(!e||e.disabled)return false;var r=e.getBoundingClientRect?e.getBoundingClientRect():null;return !!r&&r.width>0&&r.height>0&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}" +
             "function num(v,d){var x=Number(String(v||'').replace(/[^0-9.]/g,''));return isFinite(x)?x:d;}" +
-            "function norm(c){c=c||{};s.cfg.minPrice=Math.max(0,num(c.minPrice,100));s.cfg.maxPrice=Math.max(0,num(c.maxPrice,10000));s.cfg.speedMs=Math.min(Math.max(num(c.speedMs,90),60),260);s.cfg.cycleDelay=Math.max(35,Math.round(s.cfg.speedMs*0.55));s.cfg.postClickWait=230+Math.round(s.cfg.speedMs*0.25);}" +
-            "function payment(){var n=document.querySelector(SEL.nav);return text(n)===SEL.payment;}" +
+            "function norm(c){c=c||{};s.cfg.minPrice=Math.max(0,num(c.minPrice,100));s.cfg.maxPrice=Math.max(0,num(c.maxPrice,10000));s.cfg.speedMs=Math.min(Math.max(num(c.speedMs,80),55),220);s.cfg.cycleDelay=Math.max(24,Math.round(s.cfg.speedMs*0.45));s.cfg.postClickWait=115+Math.round(s.cfg.speedMs*0.35);s.cfg.failCooldown=Math.max(850,Math.round(s.cfg.speedMs*12));}" +
+            "function payment(){var n=document.querySelector(SEL.nav);var t=text(document.body).toLowerCase();return text(n)===SEL.payment||t.indexOf('select method payment')>=0;}" +
             "function toastText(){var ts=document.querySelectorAll('.van-toast,.van-toast__text');var out='';for(var i=0;i<ts.length;i++){out+=' '+text(ts[i]);}return out.trim();}" +
             "function failedToast(){return /bought|someone|snatch|sold|taken/i.test(toastText());}" +
             "function rows(){var list=document.querySelector(SEL.list);return list?Array.prototype.slice.call(list.querySelectorAll(SEL.row)):[];}" +
-            "function rowAmount(row){var a=num(row.getAttribute('maximumamount'),0);if(a>0)return a;a=num(row.getAttribute('minimumamount'),0);if(a>0)return a;var m=text(row).match(/(?:\\u20B9|rs\\.?|inr)?\\s*([0-9]+(?:\\.[0-9]+)?)/i);return m?Number(m[1]):0;}" +
-            "function available(row){var b=row&&row.querySelector(SEL.buy);return b&&text(b).toLowerCase()==='buy'&&!b.disabled?b:null;}" +
+            "function rowAmount(row){var t=text(row),m=t.match(/(?:\\u20B9|rs\\.?|inr)\\s*([0-9]+(?:\\.[0-9]+)?)/i);if(m)return Number(m[1]);var a=num(row.getAttribute('maximumamount'),0);if(a>0)return a;a=num(row.getAttribute('minimumamount'),0);if(a>0)return a;return 0;}" +
+            "function available(row){var bs=row?row.querySelectorAll(SEL.buy):[];for(var i=0;i<bs.length;i++){var b=bs[i];if(vis(b)&&text(b).toLowerCase()==='buy'&&!b.disabled)return b;}return null;}" +
             "function inRange(a){var exact=Math.abs(s.cfg.minPrice-s.cfg.maxPrice)<0.01;return exact?Math.abs(a-s.cfg.minPrice)<0.01:(a+0.01>=s.cfg.minPrice&&a-0.01<=s.cfg.maxPrice);}" +
-            "function clickBuy(b){try{b.click();b.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));return true;}catch(e){return false;}}" +
+            "function fire(e,k,x,y){try{e.dispatchEvent(new MouseEvent(k,{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window}));}catch(z){try{e.dispatchEvent(new Event(k,{bubbles:true,cancelable:true}));}catch(q){}}}" +
+            "function tap(e){try{if(!vis(e))return false;var r=e.getBoundingClientRect(),x=Math.max(1,Math.min(innerWidth-2,r.left+r.width/2)),y=Math.max(1,Math.min(innerHeight-2,r.top+r.height/2));if(window.PointerEvent){try{e.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,clientX:x,clientY:y,pointerId:1,pointerType:'touch',isPrimary:true}));e.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,clientX:x,clientY:y,pointerId:1,pointerType:'touch',isPrimary:true}));}catch(p){}}['mousedown','mouseup','click'].forEach(function(k){fire(e,k,x,y);});if(e.click)e.click();return true;}catch(x){return false;}}" +
+            "function clickBuy(b){return tap(b);}" +
+            "function cleanKeys(){var n=Date.now();for(var k in s.clicked){if(s.clicked[k]<n)delete s.clicked[k];}}" +
+            "function rowKey(row,amt){return String(amt)+'|'+text(row).replace(/\\d{8,}/g,'').slice(0,170);}" +
+            "function skip(row,amt){cleanKeys();var k=rowKey(row,amt);return s.clicked[k]&&s.clicked[k]>Date.now();}" +
+            "function mark(row,amt,ms){s.clicked[rowKey(row,amt)]=Date.now()+ms;}" +
             "function report(extra){var now=Date.now();if(now-s.lastReport<250&&!extra)return;s.lastReport=now;post('stats',Object.assign({},s.stats,extra||{}));}" +
             "function stop(reason){s.run=false;if(s.timer)clearTimeout(s.timer);if(s.scanTimer)clearTimeout(s.scanTimer);try{if(s.observer)s.observer.disconnect();}catch(e){}post('running',{running:false,reason:reason||'Stopped'});report();}" +
-            "function tryBuy(){if(!s.run)return false;if(payment()){post('paymentDetected',{});stop('Payment page detected');return true;}if(failedToast()){s.lastClick=Date.now();switchTab();return false;}var now=Date.now();if(now-s.lastClick<s.cfg.postClickWait)return false;var rs=rows();s.stats.scanned+=rs.length;for(var i=0;i<rs.length&&i<90;i++){var row=rs[i];if(row.__arbSkipUntil&&Date.now()<row.__arbSkipUntil)continue;var amt=rowAmount(row);if(!amt||!inRange(amt))continue;var btn=available(row);if(!btn)continue;s.stats.eligible++;var checkAmt=rowAmount(row);if(!inRange(checkAmt))continue;s.lastClick=Date.now();row.__arbSkipUntil=s.lastClick+1500;if(clickBuy(btn)){s.stats.clicked++;report({lastPrice:checkAmt});return true;}}return false;}" +
-            "function switchTab(){var want=(s.tab++%2===0)?'Default':'Large';var ts=document.querySelectorAll(SEL.tabs);for(var i=0;i<ts.length;i++){var label=text(ts[i].querySelector('.txt')||ts[i]);if(label===want){ts[i].click();return true;}}return false;}" +
-            "function observe(){try{if(s.observer)s.observer.disconnect();var target=document.body;s.observer=new MutationObserver(function(){var now=Date.now();if(!s.run||now-s.lastObs<18)return;s.lastObs=now;if(failedToast()){s.lastClick=now;switchTab();return;}if(s.scanTimer)clearTimeout(s.scanTimer);s.scanTimer=setTimeout(function(){tryBuy();},12);});s.observer.observe(target,{childList:true,subtree:true,attributes:true,attributeFilter:['maximumamount','minimumamount','disabled','class']});}catch(e){}}" +
+            "function tryBuy(){if(!s.run)return false;if(payment()){post('paymentDetected',{});stop('Payment page detected');return true;}if(failedToast()){s.lastFail=Date.now();s.lastClick=s.lastFail;switchTab();return false;}var now=Date.now();if(now-s.lastClick<s.cfg.postClickWait)return false;var rs=rows();s.stats.scanned+=rs.length;for(var i=0;i<rs.length&&i<120;i++){var row=rs[i],amt=rowAmount(row);if(!amt||!inRange(amt)||skip(row,amt))continue;var btn=available(row);if(!btn)continue;s.stats.eligible++;var checkAmt=rowAmount(row);if(!inRange(checkAmt)||skip(row,checkAmt))continue;s.lastClick=Date.now();mark(row,checkAmt,s.cfg.failCooldown);if(clickBuy(btn)){s.stats.clicked++;report({lastPrice:Math.round(checkAmt)});return true;}}return false;}" +
+            "function switchTab(){var want=(s.tab++%2===0)?'Default':'Large';var ts=document.querySelectorAll(SEL.tabs);for(var i=0;i<ts.length;i++){var label=text(ts[i].querySelector('.txt')||ts[i]);if(label===want){tap(ts[i]);return true;}}return false;}" +
+            "function observe(){try{if(s.observer)s.observer.disconnect();var target=document.body;s.observer=new MutationObserver(function(){var now=Date.now();if(!s.run||now-s.lastObs<16)return;s.lastObs=now;if(failedToast()){s.lastFail=now;s.lastClick=now;switchTab();return;}if(s.scanTimer)clearTimeout(s.scanTimer);s.scanTimer=setTimeout(function(){tryBuy();},8);});s.observer.observe(target,{childList:true,subtree:true,attributes:true,attributeFilter:['maximumamount','minimumamount','disabled','class','style']});}catch(e){post('engineError',{message:String(e&&e.message?e.message:e)});}}" +
             "function loop(){if(!s.run)return;if(tryBuy()){s.timer=setTimeout(loop,s.cfg.postClickWait);return;}switchTab();s.scanTimer=setTimeout(function(){tryBuy();},s.cfg.cycleDelay);s.timer=setTimeout(loop,s.cfg.speedMs);}" +
             "window.__ARB_SMART_BOT__={siteDom:true,start:function(c){norm(c);if(s.run)return;s.run=true;s.tab=0;post('running',{running:true});observe();loop();},stop:function(){stop('Stopped by user');},updateConfig:function(c){norm(c);report();},ping:function(){post('ready',{href:location.href,engine:'site-dom'});}};post('ready',{href:location.href,engine:'site-dom'});return true;})();";
 }

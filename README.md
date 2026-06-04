@@ -1,50 +1,59 @@
-# Welcome to your Expo app 👋
+# ARB Smart Bot
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Native Android WebView bot app with a Render-hosted subscription/payment backend.
 
-## Get started
+## Projects
 
-1. Install dependencies
+- `android-bot/` - lightweight native Android APK project.
+- `backend/` - Node/Express API for subscription checks and Cashfree payment flow.
+- `render.yaml` - Render web service config. The service runs from `backend/`.
 
-   ```bash
-   npm install
-   ```
+## Android Build
 
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```powershell
+cd android-bot
+.\gradlew.bat clean assembleRelease
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Release APK output:
 
-## Learn more
+```text
+android-bot/app/build/outputs/apk/release/app-release.apk
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+Local APK files are ignored by Git.
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## Backend
 
-## Join the community
+```powershell
+cd backend
+npm install
+npm start
+```
 
-Join our community of developers creating universal apps.
+Required production environment variables on Render:
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY` or `SUPABASE_ANON_KEY`
+- `CASHFREE_APP_ID`
+- `CASHFREE_SECRET_KEY`
+- `PUBLIC_BASE_URL`
+- `APP_RETURN_URL`
+
+Default production API used by the APK:
+
+```text
+https://arbsmartbot-b6rn.onrender.com
+```
+
+Default website loaded by the APK:
+
+```text
+https://arbpay.me/
+```
+
+Buy page used by the bot:
+
+```text
+https://arbpay.me/#/buy/arb
+```
