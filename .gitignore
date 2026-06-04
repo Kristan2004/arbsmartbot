@@ -26,8 +26,9 @@ npm-debug.*
 yarn-debug.*
 yarn-error.*
 
-# macOS
+# macOS / Windows
 .DS_Store
+Thumbs.db
 *.pem
 
 # local env files
@@ -41,3 +42,16 @@ app-example
 # generated native folders
 /ios
 /android
+
+# local Android build outputs
+*.apk
+*.aab
+*.ap_
+android-sdk/
+android-bot/.gradle/
+android-bot/build/
+android-bot/app/build/
+android-bot/local.properties
+android-bot/*.iml
+android-bot/.idea/
+*.keystore
