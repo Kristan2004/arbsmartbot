@@ -714,9 +714,25 @@ public class MainActivity extends Activity {
                     JSONObject msg = new JSONObject(raw);
                     String type = msg.optString("type");
                     JSONObject payload = msg.optJSONObject("payload");
-                    if ("running".equals(type) && payload != null) running = payload.optBoolean("running", running);
+                    if ("running".equals(type) && payload != null) {
+                        running = payload.optBoolean("running", running);
+                        if (runButton != null) {
+                            runButton.setText(running ? "STOP" : "START");
+                            runButton.setBackground(bg(running ? "#EF4444" : "#0AF08A", running ? "#EF4444" : "#0AF08A", dp(8)));
+                        }
+                        if (statusText != null && active) statusText.setText(running ? "Running" : "Bot Ready");
+                    }
                     if ("stats".equals(type) && payload != null) {
                         statsText.setText("Scan " + payload.optInt("scanned") + "  Fit " + payload.optInt("eligible") + "  Buy " + payload.optInt("clicked"));
+                    }
+                    if ("paymentDetected".equals(type)) {
+                        running = false;
+                        if (runButton != null) {
+                            runButton.setText("START");
+                            runButton.setBackground(bg("#0AF08A", "#0AF08A", dp(8)));
+                        }
+                        if (statusText != null) statusText.setText("Payment Found");
+                        toast("Payment page detected");
                     }
                     if ("engineError".equals(type)) toast("Bot engine error");
                 } catch (Exception ignored) {
@@ -727,24 +743,31 @@ public class MainActivity extends Activity {
 
     private static final String BOT_JS =
             "(function(){if(window.__ARB_SMART_BOT__){window.__ARB_SMART_BOT__.ping();return true;}" +
-            "var s={run:false,timer:null,lock:false,lastBuy:0,lastTab:0,lastReport:0,lastFlip:0,stats:{scanned:0,eligible:0,clicked:0},cfg:{minPrice:100,maxPrice:10000,speedMs:25,cooldownMs:20}};" +
+            "var s={run:false,timer:null,lock:false,lastBuy:0,lastTab:0,lastReport:0,lastFlip:0,afterClick:0,stats:{scanned:0,eligible:0,clicked:0},cfg:{minPrice:100,maxPrice:10000,speedMs:10,cooldownMs:12,tabDelayMs:32,settleMs:90,scanLimit:180}};" +
             "function post(t,p){try{ARBBridge.post(JSON.stringify({type:t,payload:p||{}}));}catch(e){}}" +
             "function txt(e){return String(e&&(e.innerText||e.textContent)||'').replace(/\\s+/g,' ').trim();}" +
-            "function vis(e){if(!e||e.disabled)return false;var r=e.getBoundingClientRect?e.getBoundingClientRect():null;return !r||(r.width>0&&r.height>0);}" +
+            "function vis(e){if(!e||e.disabled)return false;var r=e.getBoundingClientRect?e.getBoundingClientRect():null;return !!r&&r.width>0&&r.height>0&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}" +
             "function num(v,d){var x=Number(String(v||'').replace(/[^0-9.]/g,''));return isFinite(x)?x:d;}" +
-            "function norm(c){c=c||{};s.cfg.minPrice=Math.max(0,num(c.minPrice,100));s.cfg.maxPrice=Math.max(0,num(c.maxPrice,10000));s.cfg.speedMs=Math.min(Math.max(num(c.speedMs,25),10),500);}" +
-            "function click(e){try{if(e.scrollIntoView)e.scrollIntoView({block:'center',inline:'center'});['pointerdown','touchstart','mousedown','mouseup','touchend','pointerup','click'].forEach(function(k){try{e.dispatchEvent(new Event(k,{bubbles:true,cancelable:true}));}catch(x){}});if(e.click)e.click();return true;}catch(x){return false;}}" +
+            "function norm(c){c=c||{};s.cfg.minPrice=Math.max(0,num(c.minPrice,100));s.cfg.maxPrice=Math.max(0,num(c.maxPrice,10000));s.cfg.speedMs=Math.min(Math.max(num(c.speedMs,10),8),500);}" +
+            "function fire(e,k,x,y){try{e.dispatchEvent(new MouseEvent(k,{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window}));}catch(z){try{e.dispatchEvent(new Event(k,{bubbles:true,cancelable:true}));}catch(q){}}}" +
+            "function click(e){try{if(!vis(e))return false;var r=e.getBoundingClientRect(),x=Math.max(1,Math.min(innerWidth-2,r.left+r.width/2)),y=Math.max(1,Math.min(innerHeight-2,r.top+r.height/2));['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(k){fire(e,k,x,y);});if(e.click)e.click();return true;}catch(x){return false;}}" +
             "function byText(name){name=String(name).toLowerCase();return Array.prototype.slice.call(document.querySelectorAll('button,[role=\"tab\"],a,div,span')).filter(function(e){return vis(e)&&txt(e).toLowerCase()===name;})[0]||null;}" +
-            "function prep(){var otp=byText('otp-upi');if(otp)click(otp);var now=Date.now();var tabs=['default','large'];for(var i=0;i<tabs.length;i++){var tab=byText(tabs[(s.lastFlip+i)%tabs.length]);if(tab)click(tab);}s.lastFlip=(s.lastFlip+1)%tabs.length;s.lastTab=now;}" +
+            "function prep(){var otp=byText('otp-upi');if(otp)click(otp);var tab=byText((s.lastFlip++%2)===0?'default':'large');if(tab)click(tab);s.lastTab=Date.now();}" +
             "function isYellow(e){try{var c=getComputedStyle(e).backgroundColor;var m=c.match(/\\d+/g)||[];var r=+m[0],g=+m[1],b=+m[2];return r>160&&g>120&&b<90;}catch(x){return false;}}" +
             "function isBuy(e){var t=txt(e).toLowerCase();return vis(e)&&((t==='buy'||t.indexOf('buy')>=0)||isYellow(e));}" +
             "function buys(){return Array.prototype.slice.call(document.querySelectorAll('button,[role=\"button\"],a,div[role=\"button\"]')).filter(isBuy);}" +
+            "function buyCount(e){return e&&e.querySelectorAll?Array.prototype.slice.call(e.querySelectorAll('button,[role=\"button\"],a,div[role=\"button\"]')).filter(isBuy).length:0;}" +
+            "function liveButton(b){try{var r=b.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2,e=document.elementFromPoint(x,y);while(e&&e!==document.body&&!isBuy(e))e=e.parentElement;return isBuy(e)?e:b;}catch(x){return b;}}" +
+            "function loading(){return Array.prototype.slice.call(document.querySelectorAll('.van-loading,.van-toast__loading')).some(vis);}" +
+            "function paymentPage(){var t=txt(document.body).toLowerCase();return t.indexOf('select method payment')>=0||t.indexOf('please select payment account')>=0||t.indexOf('use another account')>=0;}" +
+            "function stopLocal(reason){s.run=false;s.lock=false;if(s.timer)clearTimeout(s.timer);s.timer=null;post('running',{running:false,reason:reason||''});}" +
             "function values(t){var a=[],r=/(?:\\u20B9|rs\\.?|inr)?\\s*([0-9]+(?:\\.[0-9]+)?)/gi,m;while((m=r.exec(t))){var x=Number(m[1]);if(isFinite(x)&&x>0)a.push(x);}return a;}" +
-            "function card(b){var x=b;for(var d=0;d<9&&x;d++){var t=txt(x).toLowerCase();var bc=x.querySelectorAll?Array.prototype.slice.call(x.querySelectorAll('button,[role=\"button\"],a,div[role=\"button\"]')).filter(isBuy).length:0;if((t.indexOf('reward')>=0||t.indexOf('profit')>=0||t.indexOf('inr')>=0||t.indexOf('rs')>=0||values(t).length>=2)&&bc<=3)return x;x=x.parentElement;}return b.parentElement||b;}" +
+            "function card(b){var x=b;for(var d=0;d<9&&x;d++){var t=txt(x).toLowerCase(),bc=buyCount(x);if(bc===1&&(t.indexOf('reward')>=0||t.indexOf('profit')>=0||t.indexOf('limit')>=0||values(t).length>=2))return x;x=x.parentElement;}return b.parentElement||b;}" +
             "function parseOrder(b){var c=card(b),t=txt(c||b),v=values(t);if(v.length<1)return null;var rewardMatch=t.match(/reward\\s*\\+?\\s*(?:\\u20B9|rs\\.?|inr)?\\s*([0-9]+(?:\\.[0-9]+)?)/i);var limitMatch=t.match(/limit\\s*([0-9]+(?:\\.[0-9]+)?)[-–]([0-9]+(?:\\.[0-9]+)?)/i);var amountMatch=t.match(/(?:\\u20B9|rs\\.?|inr)\\s*([0-9]+(?:\\.[0-9]+)?)/i);var price=amountMatch?Number(amountMatch[1]):(limitMatch?Number(limitMatch[1]):Math.max.apply(null,v));var reward=rewardMatch?Number(rewardMatch[1]):0;if(!isFinite(price)||price<=0)return null;return{price:price,reward:reward,button:b,card:c,text:t};}" +
+            "function parseOrder(b){b=liveButton(b);var c=card(b),t=txt(c||b),v=values(t);if(v.length<1)return null;var rewardMatch=t.match(/reward\\s*\\+?\\s*(?:\\u20B9|rs\\.?|inr)?\\s*([0-9]+(?:\\.[0-9]+)?)/i);var limitMatch=t.match(/limit\\s*([0-9]+(?:\\.[0-9]+)?)\\D+([0-9]+(?:\\.[0-9]+)?)/i);var amountMatch=t.match(/(?:\\u20B9|rs\\.?|inr)\\s*([0-9]+(?:\\.[0-9]+)?)/i);var price=amountMatch?Number(amountMatch[1]):(limitMatch?Number(limitMatch[1]):NaN);var reward=rewardMatch?Number(rewardMatch[1]):0;if(!isFinite(price)||price<=0)return null;return{price:price,reward:reward,button:b,card:c,text:t};}" +
             "function same(a,b){return a&&b&&Math.abs(a.price-b.price)<=0.01;}" +
-            "function report(extra){var now=Date.now();if(now-s.lastReport<500&&!extra)return;s.lastReport=now;post('stats',Object.assign({},s.stats,extra||{}));}" +
-            "function scanOnce(){prep();var bs=buys();s.stats.scanned+=bs.length;for(var i=0;i<bs.length&&i<120;i++){var o=parseOrder(bs[i]);if(!o)continue;if(o.price<s.cfg.minPrice||o.price>s.cfg.maxPrice)continue;s.stats.eligible++;if(s.lock||Date.now()-s.lastBuy<s.cfg.cooldownMs)continue;var recheck=parseOrder(bs[i]);if(!same(o,recheck))continue;if(recheck.price<s.cfg.minPrice||recheck.price>s.cfg.maxPrice)continue;s.lock=true;var ok=click(recheck.button);s.lastBuy=Date.now();s.lock=false;if(ok){s.stats.clicked++;report({lastPrice:recheck.price,lastReward:recheck.reward});break;}}}" +
-            "function scan(){if(!s.run)return;try{scanOnce();setTimeout(function(){if(s.run)scanOnce();},5);report();}catch(e){s.lock=false;post('engineError',{message:String(e&&e.message?e.message:e)});}finally{if(s.run)s.timer=setTimeout(scan,s.cfg.speedMs);}}" +
-            "window.__ARB_SMART_BOT__={start:function(c){norm(c);if(s.run)return;s.run=true;post('running',{running:true});scan();},stop:function(){s.run=false;s.lock=false;if(s.timer)clearTimeout(s.timer);s.timer=null;post('running',{running:false});report();},updateConfig:function(c){norm(c);report();},ping:function(){post('ready',{href:location.href});}};post('ready',{href:location.href});return true;})();";
+            "function report(extra){var now=Date.now();if(now-s.lastReport<350&&!extra)return;s.lastReport=now;post('stats',Object.assign({},s.stats,extra||{}));}" +
+            "function scanRows(){if(paymentPage()){post('paymentDetected',{});stopLocal('payment');return true;}if(loading()||Date.now()<s.afterClick)return false;var bs=buys();s.stats.scanned+=bs.length;for(var i=0;i<bs.length&&i<s.cfg.scanLimit;i++){var b=liveButton(bs[i]),o=parseOrder(b);if(!o)continue;if(o.price<s.cfg.minPrice||o.price>s.cfg.maxPrice)continue;s.stats.eligible++;if(s.lock||Date.now()-s.lastBuy<s.cfg.cooldownMs)continue;var live=liveButton(o.button),recheck=parseOrder(live);if(!same(o,recheck))continue;if(recheck.price<s.cfg.minPrice||recheck.price>s.cfg.maxPrice)continue;s.lock=true;var ok=click(recheck.button);s.lastBuy=Date.now();s.afterClick=s.lastBuy+s.cfg.settleMs;s.lock=false;if(ok){s.stats.clicked++;report({lastPrice:recheck.price,lastReward:recheck.reward});return true;}}return false;}" +
+            "function scan(){if(!s.run)return;try{scanRows();prep();setTimeout(function(){try{if(s.run){scanRows();report();}}catch(e){s.lock=false;post('engineError',{message:String(e&&e.message?e.message:e)});}finally{if(s.run)s.timer=setTimeout(scan,s.cfg.speedMs);}},s.cfg.tabDelayMs);}catch(e){s.lock=false;post('engineError',{message:String(e&&e.message?e.message:e)});if(s.run)s.timer=setTimeout(scan,s.cfg.speedMs);}}" +
+            "window.__ARB_SMART_BOT__={start:function(c){norm(c);if(s.run)return;s.run=true;post('running',{running:true});scan();},stop:function(){stopLocal('manual');report();},updateConfig:function(c){norm(c);report();},ping:function(){post('ready',{href:location.href});}};post('ready',{href:location.href});return true;})();";
 }
