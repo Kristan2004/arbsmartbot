@@ -81,7 +81,7 @@ public class MainActivity extends Activity {
     private String savedUuid = "";
     private String planCode = "daily";
     private int planAmount = 50;
-    private static final int AUTO_SPEED_MS = 130;
+    private static final int AUTO_SPEED_MS = 115;
     private int speedMs = AUTO_SPEED_MS;
     private long expiryMs = 0L;
     private long lastBridgeMs = 0L;
@@ -866,12 +866,12 @@ public class MainActivity extends Activity {
     private static final String BOT_JS_SITE =
             "(function(){if(window.__ARB_SMART_BOT__&&window.__ARB_SMART_BOT__.siteDom){window.__ARB_SMART_BOT__.ping();return true;}" +
             "var SEL={tabs:'.x-buyList-filter .item',active:'active',list:'.x-buyList-list',row:'.item.mb32,[maximumamount],[minimumamount]',buy:'button.x-btn,button,[role=\"button\"]',nav:'.van-nav-bar__title',payment:'Select Method Payment'};" +
-            "var s={run:false,timer:null,scanTimer:null,observer:null,tab:0,lastReport:0,lastClick:0,lastObs:0,lastFail:0,lastTab:0,pauseUntil:0,loadingSince:0,lastNudge:0,lastReload:0,clicked:{},stats:{scanned:0,eligible:0,clicked:0},cfg:{minPrice:100,maxPrice:10000,speedMs:130,cycleDelay:78,postClickWait:360,failCooldown:2400,tabMinGap:190,warningPause:12000}};" +
+            "var s={run:false,timer:null,scanTimer:null,observer:null,tab:0,lastReport:0,lastClick:0,lastObs:0,lastFail:0,lastTab:0,pauseUntil:0,loadingSince:0,lastNudge:0,lastReload:0,clicked:{},stats:{scanned:0,eligible:0,clicked:0},cfg:{minPrice:100,maxPrice:10000,speedMs:115,cycleDelay:70,postClickWait:285,failCooldown:650,tabMinGap:165,warningPause:12000}};" +
             "function post(t,p){try{ARBBridge.post(JSON.stringify({type:t,payload:p||{}}));}catch(e){}}" +
             "function text(e){return String(e&&(e.innerText||e.textContent)||'').replace(/\\s+/g,' ').trim();}" +
             "function vis(e){if(!e||e.disabled)return false;var r=e.getBoundingClientRect?e.getBoundingClientRect():null;return !!r&&r.width>0&&r.height>0&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}" +
             "function num(v,d){var x=Number(String(v||'').replace(/[^0-9.]/g,''));return isFinite(x)?x:d;}" +
-            "function norm(c){c=c||{};s.cfg.minPrice=Math.max(0,num(c.minPrice,100));s.cfg.maxPrice=Math.max(0,num(c.maxPrice,10000));s.cfg.speedMs=Math.min(Math.max(num(c.speedMs,130),110),210);s.cfg.cycleDelay=Math.max(70,Math.round(s.cfg.speedMs*0.6));s.cfg.postClickWait=320+Math.round(s.cfg.speedMs*0.55);s.cfg.failCooldown=Math.max(2200,Math.round(s.cfg.speedMs*18));s.cfg.tabMinGap=Math.max(170,Math.round(s.cfg.speedMs*1.35));s.cfg.warningPause=12000;}" +
+            "function norm(c){c=c||{};s.cfg.minPrice=Math.max(0,num(c.minPrice,100));s.cfg.maxPrice=Math.max(0,num(c.maxPrice,10000));s.cfg.speedMs=Math.min(Math.max(num(c.speedMs,115),95),180);s.cfg.cycleDelay=Math.max(58,Math.round(s.cfg.speedMs*0.58));s.cfg.postClickWait=230+Math.round(s.cfg.speedMs*0.45);s.cfg.failCooldown=Math.max(600,Math.round(s.cfg.speedMs*5.6));s.cfg.tabMinGap=Math.max(145,Math.round(s.cfg.speedMs*1.35));s.cfg.warningPause=12000;}" +
             "function payment(){var n=document.querySelector(SEL.nav);var t=text(document.body).toLowerCase();return text(n)===SEL.payment||t.indexOf('select method payment')>=0;}" +
             "function toastText(){var ts=document.querySelectorAll('.van-toast,.van-toast__text');var out='';for(var i=0;i<ts.length;i++){out+=' '+text(ts[i]);}return out.trim();}" +
             "function failedToast(){return /bought|someone|snatch|sold|taken/i.test(toastText());}" +
