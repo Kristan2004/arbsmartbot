@@ -91,6 +91,10 @@ public class MainActivity extends Activity {
     private Button runButton;
     private Button dailyButton;
     private Button monthlyButton;
+    private Button speed50Button;
+    private Button speed100Button;
+    private Button speed150Button;
+    private Button speed200Button;
 
     private String deviceId;
     private String savedUuid = "";
@@ -106,20 +110,20 @@ public class MainActivity extends Activity {
     private int buyCount = 0;
     private int lastPrice = 0;
     private int tabIndex = 0;
+    private int scanSpeedMs = 50;
     private boolean visualBusy = false;
     private boolean active = false;
     private boolean running = false;
     private boolean pendingStart = false;
     private TextRecognizer textRecognizer;
 
-    private static final long OCR_LOOP_MS = 60L;
-    private static final long TAB_TAP_GAP_MS = 420L;
-    private static final long BUY_TAP_GAP_MS = 220L;
+    private static final int HEADER_HEIGHT_DP = 216;
+    private static final int[] SPEED_OPTIONS_MS = new int[]{50, 100, 150, 200};
     private static final long SITE_WARNING_PAUSE_MS = 12000L;
     private static final float MAX_CAPTURE_WIDTH = 720f;
     private static final float FALLBACK_BUY_X = 0.86f;
     private static final float FALLBACK_BUY_Y_OFFSET = 0.032f;
-    private static final Pattern MONEY_PATTERN = Pattern.compile("(?:₹|rs\\.?|inr)\\s*([0-9]{2,7})", Pattern.CASE_INSENSITIVE);
+    private static final Pattern MONEY_PATTERN = Pattern.compile("(?:\\u20B9|rs\\.?|inr)\\s*([0-9]{2,7})", Pattern.CASE_INSENSITIVE);
     private static final Pattern PLAIN_AMOUNT_PATTERN = Pattern.compile("^\\s*([0-9]{2,7})\\s*$");
     private static final Pattern LEADING_AMOUNT_PATTERN = Pattern.compile("^\\s*[^0-9]{0,4}([0-9]{2,7})\\s*(?:upi|bank|usdt|arb)?\\b", Pattern.CASE_INSENSITIVE);
 
@@ -178,6 +182,7 @@ public class MainActivity extends Activity {
         deviceId = "android-" + Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
         savedUuid = prefs.getString("uuid", "");
         expiryMs = prefs.getLong("expiry_ms", 0L);
+        scanSpeedMs = normalizeSpeed(prefs.getInt("scan_speed_ms", 50));
         textRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
         buildUi();
         setupWebView();
@@ -342,7 +347,7 @@ public class MainActivity extends Activity {
             return false;
         });
         FrameLayout.LayoutParams webParams = frame(-1, -1, Gravity.BOTTOM);
-        webParams.topMargin = dp(176);
+        webParams.topMargin = dp(HEADER_HEIGHT_DP);
         root.addView(webView, webParams);
 
         loader = new ProgressBar(this);
@@ -372,7 +377,7 @@ public class MainActivity extends Activity {
         header.setPadding(dp(14), dp(8), dp(14), dp(9));
         header.setBackground(bg("#FB06100C", "#1B3B2D", 0));
         header.setElevation(dp(12));
-        root.addView(header, frame(-1, dp(176), Gravity.TOP));
+        root.addView(header, frame(-1, dp(HEADER_HEIGHT_DP), Gravity.TOP));
 
         LinearLayout top = row();
         LinearLayout titleBox = new LinearLayout(this);
@@ -399,11 +404,26 @@ public class MainActivity extends Activity {
         inputs.addView(box("MAX INR", maxInput), weight());
         header.addView(inputs, margins(-1, dp(52), 0, dp(6), 0, 0));
 
+        LinearLayout speedRow = row();
+        TextView speedLabel = label("SPEED", 10, "#8AE6AE", true);
+        speedLabel.setGravity(Gravity.CENTER_VERTICAL);
+        speedRow.addView(speedLabel, margins(dp(52), dp(32), dp(2), 0, dp(4), 0));
+        speed50Button = speedButton("50", 50);
+        speed100Button = speedButton("100", 100);
+        speed150Button = speedButton("150", 150);
+        speed200Button = speedButton("200", 200);
+        speedRow.addView(speed50Button, speedWeight());
+        speedRow.addView(speed100Button, speedWeight());
+        speedRow.addView(speed150Button, speedWeight());
+        speedRow.addView(speed200Button, speedWeight());
+        header.addView(speedRow, margins(-1, dp(34), 0, dp(2), 0, 0));
+        refreshSpeedButtons();
+
         LinearLayout bottom = row();
         LinearLayout statBox = new LinearLayout(this);
         statBox.setOrientation(LinearLayout.VERTICAL);
         statBox.setPadding(dp(2), 0, 0, 0);
-        speedText = label("Visual OCR Engine", 11, "#FFE08A", true);
+        speedText = label("Visual OCR " + scanSpeedMs + "ms", 11, "#FFE08A", true);
         statsText = label("Scan 0  Fit 0  Buy 0", 12, "#B8CDBF", true);
         statsText.setSingleLine(false);
         statBox.addView(speedText);
@@ -420,7 +440,8 @@ public class MainActivity extends Activity {
         bottom.addView(statBox, weight());
         bottom.addView(buyPage, margins(dp(70), dp(44), dp(4), 0, dp(4), 0));
         bottom.addView(runButton, margins(dp(104), dp(44), dp(4), 0, 0, 0));
-        header.addView(bottom, margins(-1, dp(48), 0, dp(7), 0, 0));
+        header.addView(bottom, margins(-1, dp(48), 0, dp(3), 0, 0));
+        refreshSpeedButtons();
     }
 
     private void buildPayScreen() {
@@ -763,7 +784,7 @@ public class MainActivity extends Activity {
                 .addOnCompleteListener(task -> {
                     bitmap.recycle();
                     visualBusy = false;
-                    if (active && running) scheduleVisualScan(OCR_LOOP_MS);
+                    if (active && running) scheduleVisualScan(scanDelayMs());
                 });
     }
 
@@ -802,7 +823,7 @@ public class MainActivity extends Activity {
             fitCount++;
             lastPrice = hit.amount;
             updateVisualStats("Target " + hit.amount);
-            if (now - lastNativeClickMs >= BUY_TAP_GAP_MS) {
+            if (now - lastNativeClickMs >= buyTapGapMs()) {
                 lastNativeClickMs = now;
                 buyCount++;
                 tapWebPoint(hit.buyX / scale, hit.buyY / scale);
@@ -916,7 +937,7 @@ public class MainActivity extends Activity {
 
     private void maybeToggleOrderTab(List<OcrItem> items, int width, int height, float scale) {
         long now = SystemClock.uptimeMillis();
-        if (now - lastTabTapMs < TAB_TAP_GAP_MS) return;
+        if (now - lastTabTapMs < tabTapGapMs()) return;
         lastTabTapMs = now;
         String wanted = (tabIndex++ % 2 == 0) ? "default" : "large";
         for (OcrItem item : items) {
@@ -956,6 +977,53 @@ public class MainActivity extends Activity {
         if (statsText == null) return;
         String suffix = lastPrice > 0 ? "  Last " + lastPrice : "";
         statsText.setText("Scan " + scanCount + "  Fit " + fitCount + "  Buy " + buyCount + suffix);
+    }
+
+    private Button speedButton(String text, int speedMs) {
+        Button button = smallButton(text);
+        button.setOnClickListener(v -> selectSpeed(speedMs, true));
+        return button;
+    }
+
+    private void selectSpeed(int speedMs, boolean announce) {
+        scanSpeedMs = normalizeSpeed(speedMs);
+        if (prefs != null) prefs.edit().putInt("scan_speed_ms", scanSpeedMs).apply();
+        refreshSpeedButtons();
+        if (running) scheduleVisualScan(20L);
+        if (announce) toast("Speed " + scanSpeedMs + "ms");
+    }
+
+    private int normalizeSpeed(int speedMs) {
+        for (int option : SPEED_OPTIONS_MS) {
+            if (speedMs <= option) return option;
+        }
+        return 200;
+    }
+
+    private long scanDelayMs() {
+        return normalizeSpeed(scanSpeedMs);
+    }
+
+    private long tabTapGapMs() {
+        return Math.max(150L, scanDelayMs() * 3L);
+    }
+
+    private long buyTapGapMs() {
+        return Math.max(120L, scanDelayMs() + 90L);
+    }
+
+    private void refreshSpeedButtons() {
+        if (speedText != null) speedText.setText("Visual OCR " + scanSpeedMs + "ms");
+        styleSpeedButton(speed50Button, scanSpeedMs == 50);
+        styleSpeedButton(speed100Button, scanSpeedMs == 100);
+        styleSpeedButton(speed150Button, scanSpeedMs == 150);
+        styleSpeedButton(speed200Button, scanSpeedMs == 200);
+    }
+
+    private void styleSpeedButton(Button button, boolean selected) {
+        if (button == null) return;
+        button.setTextColor(color(selected ? "#03110A" : "#D8F4E5"));
+        button.setBackground(bg(selected ? "#0AF08A" : "#0B1210", selected ? "#0AF08A" : "#244033", dp(999)));
     }
 
     private int parse(EditText input, int fallback) {
@@ -1032,6 +1100,12 @@ public class MainActivity extends Activity {
     private LinearLayout.LayoutParams weight() {
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -2, 1f);
         p.setMargins(dp(3), dp(3), dp(3), dp(3));
+        return p;
+    }
+
+    private LinearLayout.LayoutParams speedWeight() {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(32), 1f);
+        p.setMargins(dp(2), 0, dp(2), 0);
         return p;
     }
 
