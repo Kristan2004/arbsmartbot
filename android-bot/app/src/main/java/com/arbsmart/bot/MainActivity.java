@@ -81,7 +81,7 @@ public class MainActivity extends Activity {
     private String savedUuid = "";
     private String planCode = "daily";
     private int planAmount = 50;
-    private static final int AUTO_SPEED_MS = 70;
+    private static final int AUTO_SPEED_MS = 150;
     private int speedMs = AUTO_SPEED_MS;
     private long expiryMs = 0L;
     private long lastBridgeMs = 0L;
@@ -358,7 +358,7 @@ public class MainActivity extends Activity {
         LinearLayout statBox = new LinearLayout(this);
         statBox.setOrientation(LinearLayout.VERTICAL);
         statBox.setPadding(dp(2), 0, 0, 0);
-        speedText = label("Auto Engine", 11, "#FFE08A", true);
+        speedText = label("Visual Engine", 11, "#FFE08A", true);
         statsText = label("Scan 0  Fit 0  Buy 0", 12, "#B8CDBF", true);
         statsText.setSingleLine(false);
         statBox.addView(speedText);
@@ -665,7 +665,7 @@ public class MainActivity extends Activity {
     }
 
     private void injectBot() {
-        webView.evaluateJavascript(BOT_JS_SITE, null);
+        webView.evaluateJavascript(BOT_JS, null);
     }
 
     private int parse(EditText input, int fallback) {
@@ -845,6 +845,8 @@ public class MainActivity extends Activity {
             "function liveButton(b){try{var r=b.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2,e=document.elementFromPoint(x,y);while(e&&e!==document.body&&!isBuy(e))e=e.parentElement;return isBuy(e)?e:b;}catch(x){return b;}}" +
             "function jitter(n){return Math.floor(Math.random()*n);}" +
             "function loading(){return Array.prototype.slice.call(document.querySelectorAll('.van-loading,.van-overlay,.van-toast__loading')).some(vis);}" +
+            "function toastText(){var ts=document.querySelectorAll('.van-toast,.van-toast__text');var out='';for(var i=0;i<ts.length;i++){out+=' '+txt(ts[i]);}return out.trim();}" +
+            "function siteWarning(){return /customer\\s*service|contact\\s*support|too\\s*frequent|frequent|risk|abnormal/i.test(toastText());}" +
             "function schedule(ms){if(!s.run)return;if(s.timer)clearTimeout(s.timer);s.timer=setTimeout(scan,Math.max(55,ms+jitter(70)-20));}" +
             "function paymentPage(){var t=txt(document.body).toLowerCase();return t.indexOf('select method payment')>=0||t.indexOf('please select payment account')>=0||t.indexOf('use another account')>=0;}" +
             "function stopLocal(reason){s.run=false;s.lock=false;if(s.timer)clearTimeout(s.timer);s.timer=null;post('running',{running:false,reason:reason||''});}" +
@@ -857,7 +859,7 @@ public class MainActivity extends Activity {
             "function same(a,b){return a&&b&&Math.abs(a.price-b.price)<=0.01;}" +
             "function inRange(p){return isFinite(p)&&p+0.01>=s.cfg.minPrice&&p-0.01<=s.cfg.maxPrice;}" +
             "function report(extra){var now=Date.now();if(now-s.lastReport<350&&!extra)return;s.lastReport=now;post('stats',Object.assign({},s.stats,extra||{}));}" +
-            "function scanRows(){if(paymentPage()){post('paymentDetected',{});stopLocal('payment');return true;}if(loading()||Date.now()<s.afterClick)return false;var bs=buys();s.stats.scanned+=bs.length;for(var i=0;i<bs.length&&i<s.cfg.scanLimit;i++){var b=liveButton(bs[i]),o=parseOrder(b);if(!o)continue;if(!inRange(o.price))continue;s.stats.eligible++;if(s.lock||Date.now()-s.lastBuy<s.cfg.cooldownMs)continue;var live=liveButton(o.button),recheck=parseOrder(live);if(!same(o,recheck))continue;if(!inRange(recheck.price))continue;s.lock=true;var ok=click(recheck.button);s.lastBuy=Date.now();s.afterClick=s.lastBuy+s.cfg.settleMs+jitter(260);s.lock=false;if(ok){s.stats.clicked++;report({lastPrice:recheck.price,lastReward:recheck.reward});return true;}}return false;}" +
+            "function scanRows(){if(paymentPage()){post('paymentDetected',{});stopLocal('payment');return true;}if(siteWarning()){report({state:'Site warning'});stopLocal('site-warning');return true;}if(loading()||Date.now()<s.afterClick)return false;var bs=buys();s.stats.scanned+=bs.length;for(var i=0;i<bs.length&&i<s.cfg.scanLimit;i++){var b=liveButton(bs[i]),o=parseOrder(b);if(!o)continue;if(!inRange(o.price))continue;s.stats.eligible++;if(s.lock||Date.now()-s.lastBuy<s.cfg.cooldownMs)continue;var live=liveButton(o.button),recheck=parseOrder(live);if(!same(o,recheck))continue;if(!inRange(recheck.price))continue;s.lock=true;var ok=click(recheck.button);s.lastBuy=Date.now();s.afterClick=s.lastBuy+s.cfg.settleMs+jitter(260);s.lock=false;if(ok){s.stats.clicked++;report({lastPrice:recheck.price,lastReward:recheck.reward,state:'Running'});return true;}}return false;}" +
             "function scan(){if(!s.run)return;try{var acted=scanRows();if(!s.run)return;if(acted){report();schedule(s.cfg.settleMs);return;}prep();setTimeout(function(){try{var hit=false;if(s.run){hit=scanRows();report();}}catch(e){s.lock=false;post('engineError',{message:String(e&&e.message?e.message:e)});}finally{if(s.run)schedule(hit?s.cfg.settleMs:s.cfg.speedMs);}},s.cfg.tabDelayMs+jitter(55));}catch(e){s.lock=false;post('engineError',{message:String(e&&e.message?e.message:e)});schedule(s.cfg.speedMs+150);}}" +
             "window.__ARB_SMART_BOT__={start:function(c){norm(c);if(s.run)return;s.run=true;post('running',{running:true});scan();},stop:function(){stopLocal('manual');report();},updateConfig:function(c){norm(c);report();},ping:function(){post('ready',{href:location.href});}};post('ready',{href:location.href});return true;})();";
 
