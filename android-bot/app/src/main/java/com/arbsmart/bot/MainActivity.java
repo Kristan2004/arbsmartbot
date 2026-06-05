@@ -10,6 +10,7 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -75,17 +76,42 @@ public class MainActivity extends Activity {
     private Button runButton;
     private Button dailyButton;
     private Button monthlyButton;
-    private Button[] speedButtons;
 
     private String deviceId;
     private String savedUuid = "";
     private String planCode = "daily";
     private int planAmount = 50;
-    private int speedMs = 80;
+    private static final int AUTO_SPEED_MS = 70;
+    private int speedMs = AUTO_SPEED_MS;
     private long expiryMs = 0L;
+    private long lastBridgeMs = 0L;
     private boolean active = false;
     private boolean running = false;
     private boolean pendingStart = false;
+
+    private final Runnable webWatchdog = new Runnable() {
+        @Override
+        public void run() {
+            if (active && running) {
+                long now = System.currentTimeMillis();
+                String url = webView == null ? "" : String.valueOf(webView.getUrl());
+                if (!url.contains("/#/buy/arb")) {
+                    pendingStart = true;
+                    if (statusText != null) statusText.setText("Opening Buy");
+                    webView.loadUrl(BUY_URL);
+                } else if (lastBridgeMs > 0 && now - lastBridgeMs > 9000L) {
+                    pendingStart = true;
+                    lastBridgeMs = now;
+                    if (statusText != null) statusText.setText("Web Recovery");
+                    if (webView != null) {
+                        webView.stopLoading();
+                        webView.loadUrl(BUY_URL);
+                    }
+                }
+            }
+            handler.postDelayed(this, 3500);
+        }
+    };
 
     private final Runnable expiryLoop = new Runnable() {
         @Override
@@ -116,6 +142,7 @@ public class MainActivity extends Activity {
         setActive(expiryMs > System.currentTimeMillis(), false);
         checkSubscription(true);
         handler.postDelayed(expiryLoop, 15000);
+        handler.postDelayed(webWatchdog, 3500);
     }
 
     @Override
@@ -167,10 +194,13 @@ public class MainActivity extends Activity {
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         s.setJavaScriptCanOpenWindowsAutomatically(true);
         s.setTextZoom(100);
+        s.setOffscreenPreRaster(true);
+        s.setMediaPlaybackRequiresUserGesture(true);
         s.setSupportZoom(false);
         s.setBuiltInZoomControls(false);
         s.setAllowContentAccess(true);
         s.setAllowFileAccess(false);
+        s.setGeolocationEnabled(false);
         s.setUserAgentString("Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36");
 
         CookieManager.getInstance().setAcceptCookie(true);
@@ -179,6 +209,10 @@ public class MainActivity extends Activity {
         webView.addJavascriptInterface(new Bridge(), "ARBBridge");
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         webView.setScrollBarStyle(View.SCROLLBARS_INSIDE_OVERLAY);
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, true);
+        }
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
@@ -263,7 +297,7 @@ public class MainActivity extends Activity {
             return false;
         });
         FrameLayout.LayoutParams webParams = frame(-1, -1, Gravity.BOTTOM);
-        webParams.topMargin = dp(208);
+        webParams.topMargin = dp(176);
         root.addView(webView, webParams);
 
         loader = new ProgressBar(this);
@@ -293,7 +327,7 @@ public class MainActivity extends Activity {
         header.setPadding(dp(14), dp(8), dp(14), dp(9));
         header.setBackground(bg("#FB06100C", "#1B3B2D", 0));
         header.setElevation(dp(12));
-        root.addView(header, frame(-1, dp(208), Gravity.TOP));
+        root.addView(header, frame(-1, dp(176), Gravity.TOP));
 
         LinearLayout top = row();
         LinearLayout titleBox = new LinearLayout(this);
@@ -320,61 +354,28 @@ public class MainActivity extends Activity {
         inputs.addView(box("MAX INR", maxInput), weight());
         header.addView(inputs, margins(-1, dp(52), 0, dp(6), 0, 0));
 
-        LinearLayout actions = row();
-        int[] speeds = new int[]{60, 80, 120, 170};
-        speedButtons = new Button[speeds.length];
-        for (int i = 0; i < speeds.length; i++) {
-            int value = speeds[i];
-            Button b = smallButton(value + "ms");
-            b.setOnClickListener(v -> {
-                setSpeed(value, true);
-                if (running) updateBot();
-            });
-            speedButtons[i] = b;
-            actions.addView(b, weight());
-        }
-        Button buyPage = smallButton("BUY");
-        buyPage.setTextColor(color("#FFE08A"));
-        buyPage.setBackground(bg("#201709", "#B9973B", dp(999)));
-        buyPage.setOnClickListener(v -> webView.loadUrl(BUY_URL));
-        actions.addView(buyPage, weight());
-        header.addView(actions, margins(-1, dp(34), 0, dp(4), 0, 0));
-
         LinearLayout bottom = row();
         LinearLayout statBox = new LinearLayout(this);
         statBox.setOrientation(LinearLayout.VERTICAL);
         statBox.setPadding(dp(2), 0, 0, 0);
-        speedText = label("Speed 80ms", 11, "#FFE08A", true);
+        speedText = label("Auto Engine", 11, "#FFE08A", true);
         statsText = label("Scan 0  Fit 0  Buy 0", 12, "#B8CDBF", true);
         statsText.setSingleLine(false);
         statBox.addView(speedText);
         statBox.addView(statsText);
+        Button buyPage = smallButton("BUY");
+        buyPage.setTextColor(color("#FFE08A"));
+        buyPage.setBackground(bg("#201709", "#B9973B", dp(999)));
+        buyPage.setOnClickListener(v -> webView.loadUrl(BUY_URL));
         runButton = button("START", "#0AF08A", "#03110A", 15);
         runButton.setOnClickListener(v -> {
             if (running) stopBot();
             else startBot();
         });
         bottom.addView(statBox, weight());
-        bottom.addView(runButton, margins(dp(118), dp(46), dp(8), 0, 0, 0));
-        header.addView(bottom, margins(-1, dp(50), 0, dp(4), 0, 0));
-        updateSpeedButtons();
-    }
-
-    private void setSpeed(int value, boolean announce) {
-        speedMs = value;
-        if (speedText != null) speedText.setText("Speed " + value + "ms");
-        updateSpeedButtons();
-        if (announce) toast("Speed " + value + "ms");
-    }
-
-    private void updateSpeedButtons() {
-        if (speedButtons == null) return;
-        for (Button b : speedButtons) {
-            if (b == null) continue;
-            boolean selected = b.getText().toString().startsWith(speedMs + "ms");
-            b.setTextColor(color(selected ? "#06100C" : "#D8F4E5"));
-            b.setBackground(bg(selected ? "#7BE8A8" : "#0B1210", selected ? "#7BE8A8" : "#244033", dp(999)));
-        }
+        bottom.addView(buyPage, margins(dp(70), dp(44), dp(4), 0, dp(4), 0));
+        bottom.addView(runButton, margins(dp(104), dp(44), dp(4), 0, 0, 0));
+        header.addView(bottom, margins(-1, dp(48), 0, dp(7), 0, 0));
     }
 
     private void buildPayScreen() {
@@ -495,6 +496,7 @@ public class MainActivity extends Activity {
         }
         running = true;
         pendingStart = true;
+        lastBridgeMs = System.currentTimeMillis();
         if (statusText != null) statusText.setText("Loading Buy Page");
         runButton.setText("STOP");
         runButton.setBackground(bg("#EF4444", "#EF4444", dp(8)));
@@ -510,6 +512,7 @@ public class MainActivity extends Activity {
         if (!active || !running) return;
         injectBot();
         pendingStart = false;
+        lastBridgeMs = System.currentTimeMillis();
         webView.evaluateJavascript("if(window.__ARB_SMART_BOT__){window.__ARB_SMART_BOT__.start(" + config() + ");} true;", null);
         if (statusText != null) statusText.setText("Running");
         runButton.setText("STOP");
@@ -778,6 +781,7 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 try {
                     JSONObject msg = new JSONObject(raw);
+                    lastBridgeMs = System.currentTimeMillis();
                     String type = msg.optString("type");
                     JSONObject payload = msg.optJSONObject("payload");
                     if ("ready".equals(type) && payload != null) {
@@ -873,7 +877,9 @@ public class MainActivity extends Activity {
             "function usableRows(){var rs=rows(),n=0;for(var i=0;i<rs.length&&i<80;i++){if(rowAmount(rs[i])>0&&available(rs[i]))n++;}return n;}" +
             "function recoverLoading(){var now=Date.now();if(!s.loadingSince)s.loadingSince=now;var age=now-s.loadingSince;report({state:age>1200?'Recovering':'Loading'});if(age>650&&now-s.lastNudge>520){s.lastNudge=now;switchTab();}if(age>3200&&now-s.lastReload>5200){s.lastReload=now;try{if(location.hash!=='#/buy/arb')location.hash='#/buy/arb';else location.reload();}catch(e){}}return true;}" +
             "function maybeLoading(){if(!loading()){s.loadingSince=0;return false;}if(usableRows()>0){s.loadingSince=0;return false;}return recoverLoading();}" +
-            "function rows(){var list=document.querySelector(SEL.list);return list?Array.prototype.slice.call(list.querySelectorAll(SEL.row)):[];}" +
+            "function buyButtons(){var bs=document.querySelectorAll(SEL.buy),out=[];for(var i=0;i<bs.length;i++){if(vis(bs[i])&&text(bs[i]).toLowerCase()==='buy'&&!bs[i].disabled)out.push(bs[i]);}return out;}" +
+            "function fallbackRows(){var out=[],bs=buyButtons();for(var i=0;i<bs.length&&out.length<80;i++){var x=bs[i];for(var d=0;d<9&&x;d++,x=x.parentElement){var t=text(x);if(t.length>8&&/buy/i.test(t)&&/(\\u20B9|rs\\.?|inr|limit)/i.test(t)){if(out.indexOf(x)<0)out.push(x);break;}}}return out;}" +
+            "function rows(){var list=document.querySelector(SEL.list);var rs=list?Array.prototype.slice.call(list.querySelectorAll(SEL.row)):[];return rs.length?rs:fallbackRows();}" +
             "function rowAmount(row){var t=text(row),m=t.match(/(?:\\u20B9|rs\\.?|inr)\\s*([0-9]+(?:\\.[0-9]+)?)/i);if(m)return Number(m[1]);var a=num(row.getAttribute('maximumamount'),0);if(a>0)return a;a=num(row.getAttribute('minimumamount'),0);if(a>0)return a;return 0;}" +
             "function available(row){var bs=row?row.querySelectorAll(SEL.buy):[];for(var i=0;i<bs.length;i++){var b=bs[i];if(vis(b)&&text(b).toLowerCase()==='buy'&&!b.disabled)return b;}return null;}" +
             "function inRange(a){var exact=Math.abs(s.cfg.minPrice-s.cfg.maxPrice)<0.01;return exact?Math.abs(a-s.cfg.minPrice)<0.01:(a+0.01>=s.cfg.minPrice&&a-0.01<=s.cfg.maxPrice);}" +
