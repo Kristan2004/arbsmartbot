@@ -20,6 +20,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.view.Gravity;
+import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
@@ -113,11 +114,14 @@ public class MainActivity extends Activity {
 
     private static final long OCR_LOOP_MS = 60L;
     private static final long TAB_TAP_GAP_MS = 420L;
-    private static final long BUY_TAP_GAP_MS = 360L;
+    private static final long BUY_TAP_GAP_MS = 220L;
     private static final long SITE_WARNING_PAUSE_MS = 12000L;
     private static final float MAX_CAPTURE_WIDTH = 720f;
+    private static final float FALLBACK_BUY_X = 0.86f;
+    private static final float FALLBACK_BUY_Y_OFFSET = 0.032f;
     private static final Pattern MONEY_PATTERN = Pattern.compile("(?:₹|rs\\.?|inr)\\s*([0-9]{2,7})", Pattern.CASE_INSENSITIVE);
     private static final Pattern PLAIN_AMOUNT_PATTERN = Pattern.compile("^\\s*([0-9]{2,7})\\s*$");
+    private static final Pattern LEADING_AMOUNT_PATTERN = Pattern.compile("^\\s*[^0-9]{0,4}([0-9]{2,7})\\s*(?:upi|bank|usdt|arb)?\\b", Pattern.CASE_INSENSITIVE);
 
     private final Runnable visualLoop = new Runnable() {
         @Override
@@ -792,7 +796,7 @@ public class MainActivity extends Activity {
         int max = parse(maxInput, 10000);
         List<AmountHit> amounts = findAmounts(items, width, height, min, max);
         List<OcrItem> buyButtons = findBuyButtons(items, width, height);
-        AmountHit hit = chooseBuyTarget(amounts, buyButtons, height);
+        AmountHit hit = chooseBuyTarget(amounts, buyButtons, width, height);
         if (hit != null) {
             long now = SystemClock.uptimeMillis();
             fitCount++;
@@ -801,7 +805,7 @@ public class MainActivity extends Activity {
             if (now - lastNativeClickMs >= BUY_TAP_GAP_MS) {
                 lastNativeClickMs = now;
                 buyCount++;
-                tapWebPoint(hit.buyBox.centerX() / scale, hit.buyBox.centerY() / scale);
+                tapWebPoint(hit.buyX / scale, hit.buyY / scale);
                 updateVisualStats("Buying " + hit.amount);
             }
             return;
@@ -854,10 +858,10 @@ public class MainActivity extends Activity {
         return out;
     }
 
-    private AmountHit chooseBuyTarget(List<AmountHit> amounts, List<OcrItem> buyButtons, int height) {
+    private AmountHit chooseBuyTarget(List<AmountHit> amounts, List<OcrItem> buyButtons, int width, int height) {
         AmountHit best = null;
         int bestScore = Integer.MAX_VALUE;
-        int maxRowGap = Math.max(42, Math.round(height * 0.065f));
+        int maxRowGap = Math.max(70, Math.round(height * 0.085f));
         for (AmountHit amount : amounts) {
             for (OcrItem buy : buyButtons) {
                 if (buy.box.centerX() <= amount.amountBox.centerX()) continue;
@@ -867,11 +871,16 @@ public class MainActivity extends Activity {
                 if (score < bestScore) {
                     bestScore = score;
                     best = new AmountHit(amount.amount, amount.amountBox);
-                    best.buyBox = buy.box;
+                    best.buyX = buy.box.centerX();
+                    best.buyY = buy.box.centerY();
                 }
             }
         }
-        return best;
+        if (best != null || amounts.size() == 0) return best;
+        AmountHit fallback = amounts.get(0);
+        fallback.buyX = Math.round(width * FALLBACK_BUY_X);
+        fallback.buyY = Math.min(height - 3, fallback.amountBox.centerY() + Math.round(height * FALLBACK_BUY_Y_OFFSET));
+        return fallback;
     }
 
     private int parseVisibleAmount(String raw) {
@@ -883,6 +892,8 @@ public class MainActivity extends Activity {
         if (money.find()) return safeAmount(money.group(1));
         Matcher plain = PLAIN_AMOUNT_PATTERN.matcher(raw);
         if (plain.find()) return safeAmount(plain.group(1));
+        Matcher leading = LEADING_AMOUNT_PATTERN.matcher(raw);
+        if (leading.find()) return safeAmount(leading.group(1));
         return 0;
     }
 
@@ -927,6 +938,9 @@ public class MainActivity extends Activity {
         long downTime = SystemClock.uptimeMillis();
         MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, safeX, safeY, 0);
         MotionEvent up = MotionEvent.obtain(downTime, downTime + 42L, MotionEvent.ACTION_UP, safeX, safeY, 0);
+        down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        webView.requestFocus();
         webView.dispatchTouchEvent(down);
         webView.dispatchTouchEvent(up);
         down.recycle();
@@ -1064,7 +1078,8 @@ public class MainActivity extends Activity {
     private static class AmountHit {
         final int amount;
         final Rect amountBox;
-        Rect buyBox;
+        int buyX;
+        int buyY;
 
         AmountHit(int amount, Rect amountBox) {
             this.amount = amount;
