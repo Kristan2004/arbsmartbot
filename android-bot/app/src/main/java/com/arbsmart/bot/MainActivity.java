@@ -262,7 +262,7 @@ public class MainActivity extends Activity {
             return false;
         });
         FrameLayout.LayoutParams webParams = frame(-1, -1, Gravity.BOTTOM);
-        webParams.topMargin = dp(156);
+        webParams.topMargin = dp(208);
         root.addView(webView, webParams);
 
         loader = new ProgressBar(this);
@@ -289,29 +289,35 @@ public class MainActivity extends Activity {
     private void buildHeader() {
         header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
-        header.setPadding(dp(12), dp(7), dp(12), dp(7));
-        header.setBackground(bg("#FA07100D", "#234638", 0));
+        header.setPadding(dp(14), dp(8), dp(14), dp(9));
+        header.setBackground(bg("#FB06100C", "#1B3B2D", 0));
         header.setElevation(dp(12));
-        root.addView(header, frame(-1, dp(156), Gravity.TOP));
+        root.addView(header, frame(-1, dp(208), Gravity.TOP));
 
         LinearLayout top = row();
         LinearLayout titleBox = new LinearLayout(this);
         titleBox.setOrientation(LinearLayout.VERTICAL);
-        titleBox.addView(label("ARB Smart", 10, "#8AE6AE", true));
-        statusText = label("Locked", 18, "#F7FFF9", true);
+        TextView brand = label("ARB SMART", 10, "#7BE8A8", true);
+        brand.setLetterSpacing(0.08f);
+        titleBox.addView(brand);
+        statusText = label("Locked", 20, "#F7FFF9", true);
         titleBox.addView(statusText);
-        expiryText = label("Expiry --", 12, "#D9B45D", true);
-        expiryText.setGravity(Gravity.RIGHT);
         top.addView(titleBox, weight());
-        top.addView(expiryText, margins(dp(124), -2, dp(8), 0, 0, 0));
+        expiryText = label("Expiry --", 12, "#FFE08A", true);
+        expiryText.setGravity(Gravity.CENTER);
+        expiryText.setPadding(dp(10), dp(5), dp(10), dp(5));
+        expiryText.setBackground(bg("#22180A", "#6B5520", dp(999)));
+        top.addView(expiryText, margins(dp(130), dp(32), dp(8), dp(3), 0, 0));
         header.addView(top);
 
         LinearLayout inputs = row();
         minInput = input("100");
         maxInput = input("10000");
-        inputs.addView(box("Min INR", minInput), weight());
-        inputs.addView(box("Max INR", maxInput), weight());
-        header.addView(inputs);
+        minInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        maxInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        inputs.addView(box("MIN INR", minInput), weight());
+        inputs.addView(box("MAX INR", maxInput), weight());
+        header.addView(inputs, margins(-1, dp(52), 0, dp(6), 0, 0));
 
         LinearLayout actions = row();
         int[] speeds = new int[]{60, 80, 120, 170};
@@ -325,17 +331,20 @@ public class MainActivity extends Activity {
             });
             actions.addView(b, weight());
         }
-        Button buyPage = smallButton("Buy");
-        buyPage.setBackground(bg("#251D09", "#D9B45D", dp(7)));
+        Button buyPage = smallButton("BUY");
+        buyPage.setTextColor(color("#FFE08A"));
+        buyPage.setBackground(bg("#201709", "#B9973B", dp(999)));
         buyPage.setOnClickListener(v -> webView.loadUrl(BUY_URL));
         actions.addView(buyPage, weight());
-        header.addView(actions);
+        header.addView(actions, margins(-1, dp(34), 0, dp(4), 0, 0));
 
         LinearLayout bottom = row();
         LinearLayout statBox = new LinearLayout(this);
         statBox.setOrientation(LinearLayout.VERTICAL);
-        speedText = label("Speed 80ms", 10, "#D9B45D", true);
-        statsText = label("Scan 0  Fit 0  Buy 0", 11, "#A7BDB1", true);
+        statBox.setPadding(dp(2), 0, 0, 0);
+        speedText = label("Speed 80ms", 11, "#FFE08A", true);
+        statsText = label("Scan 0  Fit 0  Buy 0", 12, "#B8CDBF", true);
+        statsText.setSingleLine(false);
         statBox.addView(speedText);
         statBox.addView(statsText);
         runButton = button("START", "#0AF08A", "#03110A", 15);
@@ -344,8 +353,8 @@ public class MainActivity extends Activity {
             else startBot();
         });
         bottom.addView(statBox, weight());
-        bottom.addView(runButton, margins(dp(116), dp(42), dp(8), 0, 0, 0));
-        header.addView(bottom);
+        bottom.addView(runButton, margins(dp(118), dp(46), dp(8), 0, 0, 0));
+        header.addView(bottom, margins(-1, dp(50), 0, dp(4), 0, 0));
     }
 
     private void buildPayScreen() {
@@ -767,6 +776,8 @@ public class MainActivity extends Activity {
                         if (statusText != null && active) statusText.setText(running ? "Running" : "Bot Ready");
                     }
                     if ("stats".equals(type) && payload != null) {
+                        String state = payload.optString("state", "");
+                        if (statusText != null && running) statusText.setText(state.length() > 0 ? state : "Running");
                         int last = payload.optInt("lastPrice", 0);
                         String suffix = last > 0 ? "  Last " + last : "";
                         statsText.setText("Scan " + payload.optInt("scanned") + "  Fit " + payload.optInt("eligible") + "  Buy " + payload.optInt("clicked") + suffix);
@@ -829,7 +840,7 @@ public class MainActivity extends Activity {
     private static final String BOT_JS_SITE =
             "(function(){if(window.__ARB_SMART_BOT__&&window.__ARB_SMART_BOT__.siteDom){window.__ARB_SMART_BOT__.ping();return true;}" +
             "var SEL={tabs:'.x-buyList-filter .item',active:'active',list:'.x-buyList-list',row:'.item.mb32,[maximumamount],[minimumamount]',buy:'button.x-btn,button,[role=\"button\"]',nav:'.van-nav-bar__title',payment:'Select Method Payment'};" +
-            "var s={run:false,timer:null,scanTimer:null,observer:null,tab:0,lastReport:0,lastClick:0,lastObs:0,lastFail:0,clicked:{},stats:{scanned:0,eligible:0,clicked:0},cfg:{minPrice:100,maxPrice:10000,speedMs:80,cycleDelay:36,postClickWait:150,failCooldown:950}};" +
+            "var s={run:false,timer:null,scanTimer:null,observer:null,tab:0,lastReport:0,lastClick:0,lastObs:0,lastFail:0,loadingSince:0,lastNudge:0,lastReload:0,clicked:{},stats:{scanned:0,eligible:0,clicked:0},cfg:{minPrice:100,maxPrice:10000,speedMs:80,cycleDelay:36,postClickWait:150,failCooldown:950}};" +
             "function post(t,p){try{ARBBridge.post(JSON.stringify({type:t,payload:p||{}}));}catch(e){}}" +
             "function text(e){return String(e&&(e.innerText||e.textContent)||'').replace(/\\s+/g,' ').trim();}" +
             "function vis(e){if(!e||e.disabled)return false;var r=e.getBoundingClientRect?e.getBoundingClientRect():null;return !!r&&r.width>0&&r.height>0&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}" +
@@ -838,6 +849,9 @@ public class MainActivity extends Activity {
             "function payment(){var n=document.querySelector(SEL.nav);var t=text(document.body).toLowerCase();return text(n)===SEL.payment||t.indexOf('select method payment')>=0;}" +
             "function toastText(){var ts=document.querySelectorAll('.van-toast,.van-toast__text');var out='';for(var i=0;i<ts.length;i++){out+=' '+text(ts[i]);}return out.trim();}" +
             "function failedToast(){return /bought|someone|snatch|sold|taken/i.test(toastText());}" +
+            "function loading(){var es=document.querySelectorAll('.van-loading,.van-overlay,.van-toast--loading,.van-toast__loading,.van-loading__spinner,.van-loading__circular');for(var i=0;i<es.length;i++){if(vis(es[i]))return true;}return false;}" +
+            "function recoverLoading(){var now=Date.now();if(!s.loadingSince)s.loadingSince=now;var age=now-s.loadingSince;report({state:age>1200?'Recovering':'Loading'});if(age>650&&now-s.lastNudge>520){s.lastNudge=now;switchTab();}if(age>3200&&now-s.lastReload>5200){s.lastReload=now;try{if(location.hash!=='#/buy/arb')location.hash='#/buy/arb';else location.reload();}catch(e){}}return true;}" +
+            "function maybeLoading(){if(loading())return recoverLoading();s.loadingSince=0;return false;}" +
             "function rows(){var list=document.querySelector(SEL.list);return list?Array.prototype.slice.call(list.querySelectorAll(SEL.row)):[];}" +
             "function rowAmount(row){var t=text(row),m=t.match(/(?:\\u20B9|rs\\.?|inr)\\s*([0-9]+(?:\\.[0-9]+)?)/i);if(m)return Number(m[1]);var a=num(row.getAttribute('maximumamount'),0);if(a>0)return a;a=num(row.getAttribute('minimumamount'),0);if(a>0)return a;return 0;}" +
             "function available(row){var bs=row?row.querySelectorAll(SEL.buy):[];for(var i=0;i<bs.length;i++){var b=bs[i];if(vis(b)&&text(b).toLowerCase()==='buy'&&!b.disabled)return b;}return null;}" +
@@ -851,9 +865,9 @@ public class MainActivity extends Activity {
             "function mark(row,amt,ms){s.clicked[rowKey(row,amt)]=Date.now()+ms;}" +
             "function report(extra){var now=Date.now();if(now-s.lastReport<250&&!extra)return;s.lastReport=now;post('stats',Object.assign({},s.stats,extra||{}));}" +
             "function stop(reason){s.run=false;if(s.timer)clearTimeout(s.timer);if(s.scanTimer)clearTimeout(s.scanTimer);try{if(s.observer)s.observer.disconnect();}catch(e){}post('running',{running:false,reason:reason||'Stopped'});report();}" +
-            "function tryBuy(){if(!s.run)return false;if(payment()){post('paymentDetected',{});stop('Payment page detected');return true;}if(failedToast()){s.lastFail=Date.now();s.lastClick=s.lastFail;switchTab();return false;}var now=Date.now();if(now-s.lastClick<s.cfg.postClickWait)return false;var rs=rows();s.stats.scanned+=rs.length;for(var i=0;i<rs.length&&i<120;i++){var row=rs[i],amt=rowAmount(row);if(!amt||!inRange(amt)||skip(row,amt))continue;var btn=available(row);if(!btn)continue;s.stats.eligible++;var checkAmt=rowAmount(row);if(!inRange(checkAmt)||skip(row,checkAmt))continue;s.lastClick=Date.now();mark(row,checkAmt,s.cfg.failCooldown);if(clickBuy(btn)){s.stats.clicked++;report({lastPrice:Math.round(checkAmt)});return true;}}return false;}" +
+            "function tryBuy(){if(!s.run)return false;if(payment()){post('paymentDetected',{});stop('Payment page detected');return true;}if(failedToast()){s.lastFail=Date.now();s.lastClick=s.lastFail;switchTab();return false;}if(maybeLoading())return false;var now=Date.now();if(now-s.lastClick<s.cfg.postClickWait)return false;var rs=rows();s.stats.scanned+=rs.length;for(var i=0;i<rs.length&&i<120;i++){var row=rs[i],amt=rowAmount(row);if(!amt||!inRange(amt)||skip(row,amt))continue;var btn=available(row);if(!btn)continue;s.stats.eligible++;var checkAmt=rowAmount(row);if(!inRange(checkAmt)||skip(row,checkAmt))continue;s.lastClick=Date.now();mark(row,checkAmt,s.cfg.failCooldown);if(clickBuy(btn)){s.stats.clicked++;report({lastPrice:Math.round(checkAmt),state:'Running'});return true;}}return false;}" +
             "function switchTab(){var want=(s.tab++%2===0)?'Default':'Large';var ts=document.querySelectorAll(SEL.tabs);for(var i=0;i<ts.length;i++){var label=text(ts[i].querySelector('.txt')||ts[i]);if(label===want){tap(ts[i]);return true;}}return false;}" +
-            "function observe(){try{if(s.observer)s.observer.disconnect();var target=document.body;s.observer=new MutationObserver(function(){var now=Date.now();if(!s.run||now-s.lastObs<16)return;s.lastObs=now;if(failedToast()){s.lastFail=now;s.lastClick=now;switchTab();return;}if(s.scanTimer)clearTimeout(s.scanTimer);s.scanTimer=setTimeout(function(){tryBuy();},8);});s.observer.observe(target,{childList:true,subtree:true,attributes:true,attributeFilter:['maximumamount','minimumamount','disabled','class','style']});}catch(e){post('engineError',{message:String(e&&e.message?e.message:e)});}}" +
+            "function observe(){try{if(s.observer)s.observer.disconnect();var target=document.body;s.observer=new MutationObserver(function(){var now=Date.now();if(!s.run||now-s.lastObs<16)return;s.lastObs=now;if(failedToast()){s.lastFail=now;s.lastClick=now;switchTab();return;}if(loading()){recoverLoading();return;}if(s.scanTimer)clearTimeout(s.scanTimer);s.scanTimer=setTimeout(function(){tryBuy();},8);});s.observer.observe(target,{childList:true,subtree:true,attributes:true,attributeFilter:['maximumamount','minimumamount','disabled','class','style']});}catch(e){post('engineError',{message:String(e&&e.message?e.message:e)});}}" +
             "function loop(){if(!s.run)return;if(tryBuy()){s.timer=setTimeout(loop,s.cfg.postClickWait);return;}switchTab();s.scanTimer=setTimeout(function(){tryBuy();},s.cfg.cycleDelay);s.timer=setTimeout(loop,s.cfg.speedMs);}" +
             "window.__ARB_SMART_BOT__={siteDom:true,start:function(c){norm(c);if(s.run)return;s.run=true;s.tab=0;post('running',{running:true});observe();loop();},stop:function(){stop('Stopped by user');},updateConfig:function(c){norm(c);report();},ping:function(){post('ready',{href:location.href,engine:'site-dom'});}};post('ready',{href:location.href,engine:'site-dom'});return true;})();";
 }
