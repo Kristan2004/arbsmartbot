@@ -130,8 +130,10 @@ public class MainActivity extends Activity {
     private static final int HEADER_HEIGHT_DP = 216;
     private static final int HEADER_MINIMIZED_HEIGHT_DP = 58;
     private static final int[] SPEED_OPTIONS_MS = new int[]{50, 100, 150, 200};
-    private static final String[] ORDER_TABS = new String[]{"default", "large", "small"};
-    private static final float[] ORDER_TAB_X = new float[]{0.14f, 0.33f, 0.52f};
+    private static final String[] ORDER_TABS = new String[]{"large", "small", "default"};
+    private static final float[] ORDER_TAB_X = new float[]{0.33f, 0.52f, 0.14f};
+    private static final float ORDER_TAB_Y_BY_WIDTH = 0.56f;
+    private static final long TAB_CYCLE_MS = 1000L;
     private static final long VERIFY_WINDOW_MS = 900L;
     private static final long SITE_WARNING_PAUSE_MS = 12000L;
     private static final float MAX_CAPTURE_WIDTH = 720f;
@@ -146,6 +148,15 @@ public class MainActivity extends Activity {
         public void run() {
             if (!active || !running) return;
             runVisualScan();
+        }
+    };
+
+    private final Runnable tabCycleLoop = new Runnable() {
+        @Override
+        public void run() {
+            if (!active || !running) return;
+            runTimedTabCycle();
+            if (active && running) handler.postDelayed(this, TAB_CYCLE_MS);
         }
     };
 
@@ -612,6 +623,7 @@ public class MainActivity extends Activity {
         runButton.setText("STOP");
         runButton.setBackground(bg("#EF4444", "#EF4444", dp(8)));
         scheduleVisualScan(90L);
+        scheduleTabCycle(120L);
         if (announce) toast("Bot started");
     }
 
@@ -623,6 +635,7 @@ public class MainActivity extends Activity {
         pendingHitMs = 0L;
         nextVisualDelayMs = 0L;
         handler.removeCallbacks(visualLoop);
+        handler.removeCallbacks(tabCycleLoop);
         setHeaderMinimized(false);
         if (minimizeButton != null) minimizeButton.setVisibility(View.GONE);
         if (runButton != null) {
@@ -762,6 +775,7 @@ public class MainActivity extends Activity {
         buyCount = 0;
         lastPrice = 0;
         tabIndex = 0;
+        lastTabTapMs = 0L;
         visualPauseUntil = 0L;
         updateVisualStats("Running");
     }
@@ -769,6 +783,11 @@ public class MainActivity extends Activity {
     private void scheduleVisualScan(long delayMs) {
         handler.removeCallbacks(visualLoop);
         if (active && running) handler.postDelayed(visualLoop, Math.max(20L, delayMs));
+    }
+
+    private void scheduleTabCycle(long delayMs) {
+        handler.removeCallbacks(tabCycleLoop);
+        if (active && running) handler.postDelayed(tabCycleLoop, Math.max(0L, delayMs));
     }
 
     private void runVisualScan() {
@@ -835,6 +854,7 @@ public class MainActivity extends Activity {
             pendingHit = null;
             pendingHitMs = 0L;
             handler.removeCallbacks(visualLoop);
+            handler.removeCallbacks(tabCycleLoop);
             setHeaderMinimized(false);
             if (minimizeButton != null) minimizeButton.setVisibility(View.GONE);
             if (runButton != null) {
@@ -883,7 +903,6 @@ public class MainActivity extends Activity {
         pendingHit = null;
         pendingHitMs = 0L;
         updateVisualStats("Scanning");
-        maybeToggleOrderTab(items, width, height, scale);
     }
 
     private List<OcrItem> collectOcrItems(Text result) {
@@ -995,22 +1014,20 @@ public class MainActivity extends Activity {
                 || text.contains("abnormal");
     }
 
-    private void maybeToggleOrderTab(List<OcrItem> items, int width, int height, float scale) {
+    private void runTimedTabCycle() {
+        if (webView == null || !String.valueOf(webView.getUrl()).contains("/#/buy/arb")) return;
         long now = SystemClock.uptimeMillis();
-        if (now - lastTabTapMs < tabTapGapMs()) return;
-        lastTabTapMs = now;
+        if (now < visualPauseUntil || pendingHit != null) return;
+        if (now - lastTabTapMs < TAB_CYCLE_MS - 80L) return;
+        int width = webView.getWidth();
+        int height = webView.getHeight();
+        if (width < 80 || height < 160) return;
         int wantedIndex = tabIndex++ % ORDER_TABS.length;
-        String wanted = ORDER_TABS[wantedIndex];
-        for (OcrItem item : items) {
-            String text = normalize(item.text);
-            if (text.equals(wanted)) {
-                tapWebPoint(item.box.centerX() / scale, item.box.centerY() / scale);
-                return;
-            }
-        }
+        lastTabTapMs = now;
         float x = width * ORDER_TAB_X[wantedIndex];
-        float y = height * 0.29f;
-        tapWebPoint(x / scale, y / scale);
+        float y = Math.min(height * 0.42f, width * ORDER_TAB_Y_BY_WIDTH);
+        tapWebPoint(x, y);
+        nextVisualDelayMs = 20L;
     }
 
     private void tapWebPoint(float x, float y) {
@@ -1067,10 +1084,6 @@ public class MainActivity extends Activity {
 
     private long verifyDelayMs() {
         return Math.max(25L, Math.min(80L, scanDelayMs()));
-    }
-
-    private long tabTapGapMs() {
-        return Math.max(50L, scanDelayMs());
     }
 
     private long buyTapGapMs() {
