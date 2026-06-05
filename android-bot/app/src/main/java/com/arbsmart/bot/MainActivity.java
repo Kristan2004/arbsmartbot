@@ -5,8 +5,11 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -14,12 +17,13 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
 import android.webkit.CookieManager;
-import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -36,6 +40,12 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.text.Text;
+import com.google.mlkit.vision.text.TextRecognition;
+import com.google.mlkit.vision.text.TextRecognizer;
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
+
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -46,8 +56,12 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.TimeZone;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
     private static final String API_BASE = "https://arbsmartbot-b6rn.onrender.com";
@@ -81,13 +95,37 @@ public class MainActivity extends Activity {
     private String savedUuid = "";
     private String planCode = "daily";
     private int planAmount = 50;
-    private static final int AUTO_SPEED_MS = 115;
-    private int speedMs = AUTO_SPEED_MS;
     private long expiryMs = 0L;
-    private long lastBridgeMs = 0L;
+    private long lastVisualMs = 0L;
+    private long lastNativeClickMs = 0L;
+    private long lastTabTapMs = 0L;
+    private long visualPauseUntil = 0L;
+    private int scanCount = 0;
+    private int fitCount = 0;
+    private int buyCount = 0;
+    private int lastPrice = 0;
+    private int tabIndex = 0;
+    private boolean visualBusy = false;
     private boolean active = false;
     private boolean running = false;
     private boolean pendingStart = false;
+    private TextRecognizer textRecognizer;
+
+    private static final long OCR_LOOP_MS = 60L;
+    private static final long TAB_TAP_GAP_MS = 420L;
+    private static final long BUY_TAP_GAP_MS = 360L;
+    private static final long SITE_WARNING_PAUSE_MS = 12000L;
+    private static final float MAX_CAPTURE_WIDTH = 720f;
+    private static final Pattern MONEY_PATTERN = Pattern.compile("(?:₹|rs\\.?|inr)\\s*([0-9]{2,7})", Pattern.CASE_INSENSITIVE);
+    private static final Pattern PLAIN_AMOUNT_PATTERN = Pattern.compile("^\\s*([0-9]{2,7})\\s*$");
+
+    private final Runnable visualLoop = new Runnable() {
+        @Override
+        public void run() {
+            if (!active || !running) return;
+            runVisualScan();
+        }
+    };
 
     private final Runnable webWatchdog = new Runnable() {
         @Override
@@ -99,9 +137,9 @@ public class MainActivity extends Activity {
                     pendingStart = true;
                     if (statusText != null) statusText.setText("Opening Buy");
                     webView.loadUrl(BUY_URL);
-                } else if (lastBridgeMs > 0 && now - lastBridgeMs > 9000L) {
+                } else if (lastVisualMs > 0 && now - lastVisualMs > 11000L) {
                     pendingStart = true;
-                    lastBridgeMs = now;
+                    lastVisualMs = now;
                     if (statusText != null) statusText.setText("Web Recovery");
                     if (webView != null) {
                         webView.stopLoading();
@@ -136,6 +174,7 @@ public class MainActivity extends Activity {
         deviceId = "android-" + Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
         savedUuid = prefs.getString("uuid", "");
         expiryMs = prefs.getLong("expiry_ms", 0L);
+        textRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
         buildUi();
         setupWebView();
         if (!savedUuid.isEmpty()) uuidInput.setText(savedUuid);
@@ -148,6 +187,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
+        if (textRecognizer != null) {
+            textRecognizer.close();
+            textRecognizer = null;
+        }
         super.onDestroy();
     }
 
@@ -206,7 +249,6 @@ public class MainActivity extends Activity {
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
         webView.setWebChromeClient(new WebChromeClient());
-        webView.addJavascriptInterface(new Bridge(), "ARBBridge");
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         webView.setScrollBarStyle(View.SCROLLBARS_INSIDE_OVERLAY);
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
@@ -234,7 +276,6 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 loader.setVisibility(View.GONE);
-                injectBot();
                 if (active && (running || pendingStart)) {
                     handler.postDelayed(() -> startBotEngine(false), 180);
                 }
@@ -358,7 +399,7 @@ public class MainActivity extends Activity {
         LinearLayout statBox = new LinearLayout(this);
         statBox.setOrientation(LinearLayout.VERTICAL);
         statBox.setPadding(dp(2), 0, 0, 0);
-        speedText = label("Hybrid Engine", 11, "#FFE08A", true);
+        speedText = label("Visual OCR Engine", 11, "#FFE08A", true);
         statsText = label("Scan 0  Fit 0  Buy 0", 12, "#B8CDBF", true);
         statsText.setSingleLine(false);
         statBox.addView(speedText);
@@ -496,7 +537,8 @@ public class MainActivity extends Activity {
         }
         running = true;
         pendingStart = true;
-        lastBridgeMs = System.currentTimeMillis();
+        resetVisualStats();
+        lastVisualMs = System.currentTimeMillis();
         if (statusText != null) statusText.setText("Loading Buy Page");
         runButton.setText("STOP");
         runButton.setBackground(bg("#EF4444", "#EF4444", dp(8)));
@@ -510,34 +552,27 @@ public class MainActivity extends Activity {
 
     private void startBotEngine(boolean announce) {
         if (!active || !running) return;
-        injectBot();
         pendingStart = false;
-        lastBridgeMs = System.currentTimeMillis();
-        webView.evaluateJavascript("if(window.__ARB_SMART_BOT__){window.__ARB_SMART_BOT__.start(" + config() + ");} true;", null);
+        lastVisualMs = System.currentTimeMillis();
+        visualPauseUntil = 0L;
+        visualBusy = false;
         if (statusText != null) statusText.setText("Running");
         runButton.setText("STOP");
         runButton.setBackground(bg("#EF4444", "#EF4444", dp(8)));
+        scheduleVisualScan(90L);
         if (announce) toast("Bot started");
     }
 
     private void stopBot() {
         running = false;
         pendingStart = false;
-        if (webView != null) webView.evaluateJavascript("if(window.__ARB_SMART_BOT__){window.__ARB_SMART_BOT__.stop();} true;", null);
+        visualBusy = false;
+        handler.removeCallbacks(visualLoop);
         if (runButton != null) {
             runButton.setText("START");
             runButton.setBackground(bg("#0AF08A", "#0AF08A", dp(8)));
         }
         if (statusText != null && active) statusText.setText("Bot Ready");
-    }
-
-    private void updateBot() {
-        webView.evaluateJavascript("if(window.__ARB_SMART_BOT__){window.__ARB_SMART_BOT__.updateConfig(" + config() + ");} true;", null);
-    }
-
-    private String config() {
-        return String.format(Locale.US, "{\"minPrice\":%d,\"maxPrice\":%d,\"speedMs\":%d}",
-                parse(minInput, 100), parse(maxInput, 10000), speedMs);
     }
 
     private void checkSubscription(boolean quiet) {
@@ -664,8 +699,249 @@ public class MainActivity extends Activity {
         return out.toString();
     }
 
-    private void injectBot() {
-        webView.evaluateJavascript(BOT_JS_SITE, null);
+    private void resetVisualStats() {
+        scanCount = 0;
+        fitCount = 0;
+        buyCount = 0;
+        lastPrice = 0;
+        tabIndex = 0;
+        visualPauseUntil = 0L;
+        updateVisualStats("Running");
+    }
+
+    private void scheduleVisualScan(long delayMs) {
+        handler.removeCallbacks(visualLoop);
+        if (active && running) handler.postDelayed(visualLoop, Math.max(20L, delayMs));
+    }
+
+    private void runVisualScan() {
+        if (!active || !running || webView == null || textRecognizer == null) return;
+        if (visualBusy) {
+            scheduleVisualScan(90L);
+            return;
+        }
+        long now = System.currentTimeMillis();
+        lastVisualMs = now;
+        if (expiryMs > 0 && now >= expiryMs) {
+            expireToPayment("Your plan expired while using the bot.");
+            return;
+        }
+        if (now < visualPauseUntil) {
+            updateVisualStats("Cooling");
+            scheduleVisualScan(260L);
+            return;
+        }
+        int webWidth = webView.getWidth();
+        int webHeight = webView.getHeight();
+        if (webWidth < 80 || webHeight < 160) {
+            scheduleVisualScan(160L);
+            return;
+        }
+        float scale = Math.min(1f, MAX_CAPTURE_WIDTH / Math.max(1f, webWidth));
+        int bitmapWidth = Math.max(80, Math.round(webWidth * scale));
+        int bitmapHeight = Math.max(160, Math.round(webHeight * scale));
+        Bitmap bitmap;
+        try {
+            bitmap = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bitmap);
+            canvas.scale(scale, scale);
+            webView.draw(canvas);
+        } catch (Exception e) {
+            visualBusy = false;
+            scheduleVisualScan(180L);
+            return;
+        }
+        visualBusy = true;
+        InputImage image = InputImage.fromBitmap(bitmap, 0);
+        textRecognizer.process(image)
+                .addOnSuccessListener(text -> handleVisualText(text, bitmapWidth, bitmapHeight, scale))
+                .addOnFailureListener(e -> updateVisualStats("OCR Recovery"))
+                .addOnCompleteListener(task -> {
+                    bitmap.recycle();
+                    visualBusy = false;
+                    if (active && running) scheduleVisualScan(OCR_LOOP_MS);
+                });
+    }
+
+    private void handleVisualText(Text result, int width, int height, float scale) {
+        if (!active || !running) return;
+        lastVisualMs = System.currentTimeMillis();
+        scanCount++;
+        String all = normalize(result.getText());
+        if (all.contains("select method payment") || all.contains("please select payment account")) {
+            running = false;
+            pendingStart = false;
+            handler.removeCallbacks(visualLoop);
+            if (runButton != null) {
+                runButton.setText("START");
+                runButton.setBackground(bg("#0AF08A", "#0AF08A", dp(8)));
+            }
+            if (statusText != null) statusText.setText("Payment Found");
+            updateVisualStats("Payment Found");
+            toast("Payment page detected");
+            return;
+        }
+        if (isSiteWarning(all)) {
+            visualPauseUntil = System.currentTimeMillis() + SITE_WARNING_PAUSE_MS;
+            updateVisualStats("Cooling");
+            return;
+        }
+
+        List<OcrItem> items = collectOcrItems(result);
+        int min = parse(minInput, 100);
+        int max = parse(maxInput, 10000);
+        List<AmountHit> amounts = findAmounts(items, width, height, min, max);
+        List<OcrItem> buyButtons = findBuyButtons(items, width, height);
+        AmountHit hit = chooseBuyTarget(amounts, buyButtons, height);
+        if (hit != null) {
+            long now = SystemClock.uptimeMillis();
+            fitCount++;
+            lastPrice = hit.amount;
+            updateVisualStats("Target " + hit.amount);
+            if (now - lastNativeClickMs >= BUY_TAP_GAP_MS) {
+                lastNativeClickMs = now;
+                buyCount++;
+                tapWebPoint(hit.buyBox.centerX() / scale, hit.buyBox.centerY() / scale);
+                updateVisualStats("Buying " + hit.amount);
+            }
+            return;
+        }
+
+        updateVisualStats("Scanning");
+        maybeToggleOrderTab(items, width, height, scale);
+    }
+
+    private List<OcrItem> collectOcrItems(Text result) {
+        List<OcrItem> items = new ArrayList<>();
+        for (Text.TextBlock block : result.getTextBlocks()) {
+            addOcrItem(items, block.getText(), block.getBoundingBox());
+            for (Text.Line line : block.getLines()) {
+                addOcrItem(items, line.getText(), line.getBoundingBox());
+                for (Text.Element element : line.getElements()) {
+                    addOcrItem(items, element.getText(), element.getBoundingBox());
+                }
+            }
+        }
+        return items;
+    }
+
+    private void addOcrItem(List<OcrItem> items, String text, Rect box) {
+        if (text == null || box == null) return;
+        String clean = text.replace('\n', ' ').replaceAll("\\s+", " ").trim();
+        if (clean.length() == 0) return;
+        items.add(new OcrItem(clean, box));
+    }
+
+    private List<AmountHit> findAmounts(List<OcrItem> items, int width, int height, int min, int max) {
+        List<AmountHit> out = new ArrayList<>();
+        for (OcrItem item : items) {
+            if (item.box.centerY() < height * 0.20f || item.box.centerX() > width * 0.68f) continue;
+            int amount = parseVisibleAmount(item.text);
+            if (amount <= 0) continue;
+            boolean inRange = min == max ? amount == min : amount >= min && amount <= max;
+            if (inRange) out.add(new AmountHit(amount, item.box));
+        }
+        return out;
+    }
+
+    private List<OcrItem> findBuyButtons(List<OcrItem> items, int width, int height) {
+        List<OcrItem> out = new ArrayList<>();
+        for (OcrItem item : items) {
+            String t = normalize(item.text);
+            if (item.box.centerX() < width * 0.55f || item.box.centerY() < height * 0.18f) continue;
+            if ("buy".equals(t) || t.matches(".*\\bbuy\\b.*")) out.add(item);
+        }
+        return out;
+    }
+
+    private AmountHit chooseBuyTarget(List<AmountHit> amounts, List<OcrItem> buyButtons, int height) {
+        AmountHit best = null;
+        int bestScore = Integer.MAX_VALUE;
+        int maxRowGap = Math.max(42, Math.round(height * 0.065f));
+        for (AmountHit amount : amounts) {
+            for (OcrItem buy : buyButtons) {
+                if (buy.box.centerX() <= amount.amountBox.centerX()) continue;
+                int rowGap = Math.abs(buy.box.centerY() - amount.amountBox.centerY());
+                if (rowGap > maxRowGap) continue;
+                int score = rowGap + Math.max(0, amount.amountBox.centerX() - buy.box.centerX());
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = new AmountHit(amount.amount, amount.amountBox);
+                    best.buyBox = buy.box;
+                }
+            }
+        }
+        return best;
+    }
+
+    private int parseVisibleAmount(String raw) {
+        String text = normalize(raw);
+        if (text.length() == 0) return 0;
+        if (text.contains("reward") || text.contains("limit") || text.contains("tips") || text.contains("kyc")) return 0;
+        if (text.contains("1inr") || text.contains("1 inr") || text.contains("1u") || text.contains("1 u")) return 0;
+        Matcher money = MONEY_PATTERN.matcher(raw);
+        if (money.find()) return safeAmount(money.group(1));
+        Matcher plain = PLAIN_AMOUNT_PATTERN.matcher(raw);
+        if (plain.find()) return safeAmount(plain.group(1));
+        return 0;
+    }
+
+    private int safeAmount(String value) {
+        try {
+            return Integer.parseInt(value.replaceAll("[^0-9]", ""));
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private boolean isSiteWarning(String text) {
+        return text.contains("customer service")
+                || text.contains("contact support")
+                || text.contains("too frequent")
+                || text.contains("frequent operation")
+                || text.contains("risk")
+                || text.contains("abnormal");
+    }
+
+    private void maybeToggleOrderTab(List<OcrItem> items, int width, int height, float scale) {
+        long now = SystemClock.uptimeMillis();
+        if (now - lastTabTapMs < TAB_TAP_GAP_MS) return;
+        lastTabTapMs = now;
+        String wanted = (tabIndex++ % 2 == 0) ? "default" : "large";
+        for (OcrItem item : items) {
+            String text = normalize(item.text);
+            if (text.equals(wanted)) {
+                tapWebPoint(item.box.centerX() / scale, item.box.centerY() / scale);
+                return;
+            }
+        }
+        float x = "default".equals(wanted) ? width * 0.14f : width * 0.33f;
+        float y = height * 0.29f;
+        tapWebPoint(x / scale, y / scale);
+    }
+
+    private void tapWebPoint(float x, float y) {
+        if (webView == null) return;
+        float safeX = Math.max(2f, Math.min(webView.getWidth() - 2f, x));
+        float safeY = Math.max(2f, Math.min(webView.getHeight() - 2f, y));
+        long downTime = SystemClock.uptimeMillis();
+        MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, safeX, safeY, 0);
+        MotionEvent up = MotionEvent.obtain(downTime, downTime + 42L, MotionEvent.ACTION_UP, safeX, safeY, 0);
+        webView.dispatchTouchEvent(down);
+        webView.dispatchTouchEvent(up);
+        down.recycle();
+        up.recycle();
+    }
+
+    private String normalize(String value) {
+        return value == null ? "" : value.toLowerCase(Locale.US).replaceAll("\\s+", " ").trim();
+    }
+
+    private void updateVisualStats(String state) {
+        if (statusText != null && running) statusText.setText(state == null || state.length() == 0 ? "Running" : state);
+        if (statsText == null) return;
+        String suffix = lastPrice > 0 ? "  Last " + lastPrice : "";
+        statsText.setText("Scan " + scanCount + "  Fit " + fitCount + "  Buy " + buyCount + suffix);
     }
 
     private int parse(EditText input, int fallback) {
@@ -775,130 +1051,25 @@ public class MainActivity extends Activity {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
     }
 
-    public class Bridge {
-        @JavascriptInterface
-        public void post(String raw) {
-            runOnUiThread(() -> {
-                try {
-                    JSONObject msg = new JSONObject(raw);
-                    lastBridgeMs = System.currentTimeMillis();
-                    String type = msg.optString("type");
-                    JSONObject payload = msg.optJSONObject("payload");
-                    if ("ready".equals(type) && payload != null) {
-                        if (statusText != null && active && !running) statusText.setText("Bot Ready");
-                        if (active && pendingStart) {
-                            handler.postDelayed(() -> startBotEngine(false), 80);
-                        }
-                    }
-                    if ("running".equals(type) && payload != null) {
-                        running = payload.optBoolean("running", running);
-                        pendingStart = false;
-                        if (runButton != null) {
-                            runButton.setText(running ? "STOP" : "START");
-                            runButton.setBackground(bg(running ? "#EF4444" : "#0AF08A", running ? "#EF4444" : "#0AF08A", dp(8)));
-                        }
-                        if (statusText != null && active) statusText.setText(running ? "Running" : "Bot Ready");
-                    }
-                    if ("stats".equals(type) && payload != null) {
-                        String state = payload.optString("state", "");
-                        if (statusText != null && running) statusText.setText(state.length() > 0 ? state : "Running");
-                        int last = payload.optInt("lastPrice", 0);
-                        String suffix = last > 0 ? "  Last " + last : "";
-                        statsText.setText("Scan " + payload.optInt("scanned") + "  Fit " + payload.optInt("eligible") + "  Buy " + payload.optInt("clicked") + suffix);
-                    }
-                    if ("paymentDetected".equals(type)) {
-                        running = false;
-                        pendingStart = false;
-                        if (runButton != null) {
-                            runButton.setText("START");
-                            runButton.setBackground(bg("#0AF08A", "#0AF08A", dp(8)));
-                        }
-                        if (statusText != null) statusText.setText("Payment Found");
-                        toast("Payment page detected");
-                    }
-                    if ("engineError".equals(type)) {
-                        if (statusText != null && active) statusText.setText("Engine Recovery");
-                        toast("Bot engine recovering");
-                    }
-                } catch (Exception ignored) {
-                }
-            });
+    private static class OcrItem {
+        final String text;
+        final Rect box;
+
+        OcrItem(String text, Rect box) {
+            this.text = text;
+            this.box = new Rect(box);
         }
     }
 
-    private static final String BOT_JS =
-            "(function(){if(window.__ARB_SMART_BOT__){window.__ARB_SMART_BOT__.ping();return true;}" +
-            "var s={run:false,timer:null,lock:false,lastBuy:0,lastTab:0,lastReport:0,lastFlip:0,afterClick:0,stats:{scanned:0,eligible:0,clicked:0},cfg:{minPrice:100,maxPrice:10000,speedMs:90,cooldownMs:180,tabDelayMs:95,settleMs:520,scanLimit:80}};" +
-            "function post(t,p){try{ARBBridge.post(JSON.stringify({type:t,payload:p||{}}));}catch(e){}}" +
-            "function txt(e){return String(e&&(e.innerText||e.textContent)||'').replace(/\\s+/g,' ').trim();}" +
-            "function vis(e){if(!e||e.disabled)return false;var r=e.getBoundingClientRect?e.getBoundingClientRect():null;return !!r&&r.width>0&&r.height>0&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}" +
-            "function num(v,d){var x=Number(String(v||'').replace(/[^0-9.]/g,''));return isFinite(x)?x:d;}" +
-            "function norm(c){c=c||{};s.cfg.minPrice=Math.max(0,num(c.minPrice,100));s.cfg.maxPrice=Math.max(0,num(c.maxPrice,10000));s.cfg.speedMs=Math.min(Math.max(num(c.speedMs,90),70),400);}" +
-            "function fire(e,k,x,y){try{e.dispatchEvent(new MouseEvent(k,{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window}));}catch(z){try{e.dispatchEvent(new Event(k,{bubbles:true,cancelable:true}));}catch(q){}}}" +
-            "function click(e){try{if(!vis(e))return false;var r=e.getBoundingClientRect(),x=Math.max(1,Math.min(innerWidth-2,r.left+r.width/2)),y=Math.max(1,Math.min(innerHeight-2,r.top+r.height/2));['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(k){fire(e,k,x,y);});if(e.click)e.click();return true;}catch(x){return false;}}" +
-            "function byText(name){name=String(name).toLowerCase();return Array.prototype.slice.call(document.querySelectorAll('button,[role=\"tab\"],a,div,span')).filter(function(e){return vis(e)&&txt(e).toLowerCase()===name;})[0]||null;}" +
-            "function prep(){var otp=byText('otp-upi');if(otp)click(otp);var tab=byText((s.lastFlip++%2)===0?'default':'large');if(tab)click(tab);s.lastTab=Date.now();}" +
-            "function isYellow(e){try{var c=getComputedStyle(e).backgroundColor;var m=c.match(/\\d+/g)||[];var r=+m[0],g=+m[1],b=+m[2];return r>160&&g>120&&b<90;}catch(x){return false;}}" +
-            "function isBuy(e){var t=txt(e).toLowerCase();return vis(e)&&((t==='buy'||t.indexOf('buy')>=0)||isYellow(e));}" +
-            "function buys(){return Array.prototype.slice.call(document.querySelectorAll('button,[role=\"button\"],a,div[role=\"button\"]')).filter(isBuy);}" +
-            "function buyCount(e){return e&&e.querySelectorAll?Array.prototype.slice.call(e.querySelectorAll('button,[role=\"button\"],a,div[role=\"button\"]')).filter(isBuy).length:0;}" +
-            "function liveButton(b){try{var r=b.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2,e=document.elementFromPoint(x,y);while(e&&e!==document.body&&!isBuy(e))e=e.parentElement;return isBuy(e)?e:b;}catch(x){return b;}}" +
-            "function jitter(n){return Math.floor(Math.random()*n);}" +
-            "function loading(){return Array.prototype.slice.call(document.querySelectorAll('.van-loading,.van-overlay,.van-toast__loading')).some(vis);}" +
-            "function toastText(){var ts=document.querySelectorAll('.van-toast,.van-toast__text');var out='';for(var i=0;i<ts.length;i++){out+=' '+txt(ts[i]);}return out.trim();}" +
-            "function siteWarning(){return /customer\\s*service|contact\\s*support|too\\s*frequent|frequent|risk|abnormal/i.test(toastText());}" +
-            "function schedule(ms){if(!s.run)return;if(s.timer)clearTimeout(s.timer);s.timer=setTimeout(scan,Math.max(55,ms+jitter(70)-20));}" +
-            "function paymentPage(){var t=txt(document.body).toLowerCase();return t.indexOf('select method payment')>=0||t.indexOf('please select payment account')>=0||t.indexOf('use another account')>=0;}" +
-            "function stopLocal(reason){s.run=false;s.lock=false;if(s.timer)clearTimeout(s.timer);s.timer=null;post('running',{running:false,reason:reason||''});}" +
-            "function values(t){var a=[],r=/(?:\\u20B9|rs\\.?|inr)?\\s*([0-9]+(?:\\.[0-9]+)?)/gi,m;while((m=r.exec(t))){var x=Number(m[1]);if(isFinite(x)&&x>0)a.push(x);}return a;}" +
-            "function bandText(b){try{var br=b.getBoundingClientRect(),y=(br.top+br.bottom)/2,out=[],seen={},all=document.querySelectorAll('body *');for(var i=0;i<all.length&&out.length<70;i++){var e=all[i],t=txt(e);if(!t||t.length>140||t.toLowerCase()==='buy'||e.contains(b))continue;var r=e.getBoundingClientRect();if(!r||r.width<1||r.height<1)continue;var cy=(r.top+r.bottom)/2;if(Math.abs(cy-y)<=72&&r.right<br.left+42&&r.left<br.left&&!seen[t]){seen[t]=1;out.push(t);}}return out.join(' ');}catch(x){return '';}}" +
-            "function card(b){var x=b;for(var d=0;d<9&&x;d++){var t=txt(x).toLowerCase(),bc=buyCount(x);if(bc===1&&(t.indexOf('reward')>=0||t.indexOf('profit')>=0||t.indexOf('limit')>=0||values(t).length>=2))return x;x=x.parentElement;}return b.parentElement||b;}" +
-            "function parseOrder(b){var c=card(b),t=txt(c||b),v=values(t);if(v.length<1)return null;var rewardMatch=t.match(/reward\\s*\\+?\\s*(?:\\u20B9|rs\\.?|inr)?\\s*([0-9]+(?:\\.[0-9]+)?)/i);var limitMatch=t.match(/limit\\s*([0-9]+(?:\\.[0-9]+)?)[-–]([0-9]+(?:\\.[0-9]+)?)/i);var amountMatch=t.match(/(?:\\u20B9|rs\\.?|inr)\\s*([0-9]+(?:\\.[0-9]+)?)/i);var price=amountMatch?Number(amountMatch[1]):(limitMatch?Number(limitMatch[1]):Math.max.apply(null,v));var reward=rewardMatch?Number(rewardMatch[1]):0;if(!isFinite(price)||price<=0)return null;return{price:price,reward:reward,button:b,card:c,text:t};}" +
-            "function parseOrder(b){b=liveButton(b);var c=card(b),t=txt(c||b),v=values(t);if(v.length<1)return null;var rewardMatch=t.match(/reward\\s*\\+?\\s*(?:\\u20B9|rs\\.?|inr)?\\s*([0-9]+(?:\\.[0-9]+)?)/i);var limitMatch=t.match(/limit\\s*([0-9]+(?:\\.[0-9]+)?)\\D+([0-9]+(?:\\.[0-9]+)?)/i);var amountMatch=t.match(/(?:\\u20B9|rs\\.?|inr)\\s*([0-9]+(?:\\.[0-9]+)?)/i);var price=amountMatch?Number(amountMatch[1]):(limitMatch?Number(limitMatch[1]):NaN);var reward=rewardMatch?Number(rewardMatch[1]):0;if(!isFinite(price)||price<=0)return null;return{price:price,reward:reward,button:b,card:c,text:t};}" +
-            "function parseOrder(b){b=liveButton(b);var c=card(b),t=txt(c||b),v=values(t);if(!c||buyCount(c)!==1||v.length<1){t=(bandText(b)+' '+t).trim();v=values(t);}if(v.length<1)return null;var rewardMatch=t.match(/reward\\s*\\+?\\s*(?:\\u20B9|rs\\.?|inr)?\\s*([0-9]+(?:\\.[0-9]+)?)/i);var limitMatch=t.match(/limit\\s*([0-9]+(?:\\.[0-9]+)?)\\D+([0-9]+(?:\\.[0-9]+)?)/i);var amountMatch=t.match(/(?:\\u20B9|rs\\.?|inr)\\s*([0-9]+(?:\\.[0-9]+)?)/i);var price=amountMatch?Number(amountMatch[1]):(limitMatch?Number(limitMatch[1]):NaN);var reward=rewardMatch?Number(rewardMatch[1]):0;if(!isFinite(price)||price<=0)return null;return{price:price,reward:reward,button:b,card:c,text:t};}" +
-            "function same(a,b){return a&&b&&Math.abs(a.price-b.price)<=0.01;}" +
-            "function inRange(p){return isFinite(p)&&p+0.01>=s.cfg.minPrice&&p-0.01<=s.cfg.maxPrice;}" +
-            "function report(extra){var now=Date.now();if(now-s.lastReport<350&&!extra)return;s.lastReport=now;post('stats',Object.assign({},s.stats,extra||{}));}" +
-            "function scanRows(){if(paymentPage()){post('paymentDetected',{});stopLocal('payment');return true;}if(siteWarning()){report({state:'Site warning'});stopLocal('site-warning');return true;}if(loading()||Date.now()<s.afterClick)return false;var bs=buys();s.stats.scanned+=bs.length;for(var i=0;i<bs.length&&i<s.cfg.scanLimit;i++){var b=liveButton(bs[i]),o=parseOrder(b);if(!o)continue;if(!inRange(o.price))continue;s.stats.eligible++;if(s.lock||Date.now()-s.lastBuy<s.cfg.cooldownMs)continue;var live=liveButton(o.button),recheck=parseOrder(live);if(!same(o,recheck))continue;if(!inRange(recheck.price))continue;s.lock=true;var ok=click(recheck.button);s.lastBuy=Date.now();s.afterClick=s.lastBuy+s.cfg.settleMs+jitter(260);s.lock=false;if(ok){s.stats.clicked++;report({lastPrice:recheck.price,lastReward:recheck.reward,state:'Running'});return true;}}return false;}" +
-            "function scan(){if(!s.run)return;try{var acted=scanRows();if(!s.run)return;if(acted){report();schedule(s.cfg.settleMs);return;}prep();setTimeout(function(){try{var hit=false;if(s.run){hit=scanRows();report();}}catch(e){s.lock=false;post('engineError',{message:String(e&&e.message?e.message:e)});}finally{if(s.run)schedule(hit?s.cfg.settleMs:s.cfg.speedMs);}},s.cfg.tabDelayMs+jitter(55));}catch(e){s.lock=false;post('engineError',{message:String(e&&e.message?e.message:e)});schedule(s.cfg.speedMs+150);}}" +
-            "window.__ARB_SMART_BOT__={start:function(c){norm(c);if(s.run)return;s.run=true;post('running',{running:true});scan();},stop:function(){stopLocal('manual');report();},updateConfig:function(c){norm(c);report();},ping:function(){post('ready',{href:location.href});}};post('ready',{href:location.href});return true;})();";
+    private static class AmountHit {
+        final int amount;
+        final Rect amountBox;
+        Rect buyBox;
 
-    private static final String BOT_JS_SITE =
-            "(function(){if(window.__ARB_SMART_BOT__&&window.__ARB_SMART_BOT__.siteDom){window.__ARB_SMART_BOT__.ping();return true;}" +
-            "var SEL={tabs:'.x-buyList-filter .item',active:'active',list:'.x-buyList-list',row:'.item.mb32,[maximumamount],[minimumamount]',buy:'button.x-btn,button,[role=\"button\"]',nav:'.van-nav-bar__title',payment:'Select Method Payment'};" +
-            "var s={run:false,timer:null,scanTimer:null,observer:null,tab:0,lastReport:0,lastClick:0,lastObs:0,lastFail:0,lastTab:0,pauseUntil:0,loadingSince:0,lastNudge:0,lastReload:0,clicked:{},stats:{scanned:0,eligible:0,clicked:0},cfg:{minPrice:100,maxPrice:10000,speedMs:115,cycleDelay:70,postClickWait:285,failCooldown:650,tabMinGap:165,warningPause:12000}};" +
-            "function post(t,p){try{ARBBridge.post(JSON.stringify({type:t,payload:p||{}}));}catch(e){}}" +
-            "function text(e){return String(e&&(e.innerText||e.textContent)||'').replace(/\\s+/g,' ').trim();}" +
-            "function vis(e){if(!e||e.disabled)return false;var r=e.getBoundingClientRect?e.getBoundingClientRect():null;return !!r&&r.width>0&&r.height>0&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}" +
-            "function num(v,d){var x=Number(String(v||'').replace(/[^0-9.]/g,''));return isFinite(x)?x:d;}" +
-            "function norm(c){c=c||{};s.cfg.minPrice=Math.max(0,num(c.minPrice,100));s.cfg.maxPrice=Math.max(0,num(c.maxPrice,10000));s.cfg.speedMs=Math.min(Math.max(num(c.speedMs,115),95),180);s.cfg.cycleDelay=Math.max(58,Math.round(s.cfg.speedMs*0.58));s.cfg.postClickWait=230+Math.round(s.cfg.speedMs*0.45);s.cfg.failCooldown=Math.max(600,Math.round(s.cfg.speedMs*5.6));s.cfg.tabMinGap=Math.max(145,Math.round(s.cfg.speedMs*1.35));s.cfg.warningPause=12000;}" +
-            "function payment(){var n=document.querySelector(SEL.nav);var t=text(document.body).toLowerCase();return text(n)===SEL.payment||t.indexOf('select method payment')>=0;}" +
-            "function toastText(){var ts=document.querySelectorAll('.van-toast,.van-toast__text');var out='';for(var i=0;i<ts.length;i++){out+=' '+text(ts[i]);}return out.trim();}" +
-            "function failedToast(){return /bought|someone|snatch|sold|taken/i.test(toastText());}" +
-            "function siteWarning(){return /customer\\s*service|contact\\s*support|too\\s*frequent|frequent|risk|abnormal/i.test(toastText());}" +
-            "function optimize(){try{if(!document.getElementById('arbPerfStyle')){var st=document.createElement('style');st.id='arbPerfStyle';st.textContent='*{animation-duration:.01s!important;transition-duration:.01s!important;scroll-behavior:auto!important}.van-toast--loading{pointer-events:none!important}';document.head.appendChild(st);}var ps=document.querySelectorAll('.van-dialog,.van-popup');for(var i=0;i<ps.length;i++){var t=text(ps[i]).toLowerCase();if(t.indexOf('bonus event')>=0||t.indexOf('add to desktop')>=0){var c=ps[i].querySelector('.van-icon-cross,.van-dialog__confirm,button,[role=\"button\"]');if(c)tap(c);}}}catch(e){}}" +
-            "function loading(){var es=document.querySelectorAll('.van-loading,.van-overlay,.van-toast--loading,.van-toast__loading,.van-loading__spinner,.van-loading__circular');for(var i=0;i<es.length;i++){if(vis(es[i]))return true;}return false;}" +
-            "function usableRows(){var rs=rows(),n=0;for(var i=0;i<rs.length&&i<80;i++){if(rowAmount(rs[i])>0&&available(rs[i]))n++;}return n;}" +
-            "function recoverLoading(){var now=Date.now();if(!s.loadingSince)s.loadingSince=now;var age=now-s.loadingSince;report({state:age>1200?'Recovering':'Loading'});if(age>650&&now-s.lastNudge>520){s.lastNudge=now;switchTab();}if(age>3200&&now-s.lastReload>5200){s.lastReload=now;try{if(location.hash!=='#/buy/arb')location.hash='#/buy/arb';else location.reload();}catch(e){}}return true;}" +
-            "function maybeLoading(){if(!loading()){s.loadingSince=0;return false;}if(usableRows()>0){s.loadingSince=0;return false;}return recoverLoading();}" +
-            "function buyButtons(){var bs=document.querySelectorAll(SEL.buy),out=[];for(var i=0;i<bs.length;i++){if(vis(bs[i])&&text(bs[i]).toLowerCase()==='buy'&&!bs[i].disabled)out.push(bs[i]);}return out;}" +
-            "function fallbackRows(){var out=[],bs=buyButtons();for(var i=0;i<bs.length&&out.length<80;i++){var x=bs[i];for(var d=0;d<9&&x;d++,x=x.parentElement){var t=text(x);if(t.length>8&&/buy/i.test(t)&&/(\\u20B9|rs\\.?|inr|limit)/i.test(t)){if(out.indexOf(x)<0)out.push(x);break;}}}return out;}" +
-            "function rows(){var list=document.querySelector(SEL.list);var rs=list?Array.prototype.slice.call(list.querySelectorAll(SEL.row)):[];return rs.length?rs:fallbackRows();}" +
-            "function rowAmount(row){var t=text(row),m=t.match(/(?:\\u20B9|rs\\.?|inr)\\s*([0-9]+(?:\\.[0-9]+)?)/i);if(m)return Number(m[1]);var a=num(row.getAttribute('maximumamount'),0);if(a>0)return a;a=num(row.getAttribute('minimumamount'),0);if(a>0)return a;return 0;}" +
-            "function available(row){var bs=row?row.querySelectorAll(SEL.buy):[];for(var i=0;i<bs.length;i++){var b=bs[i];if(vis(b)&&text(b).toLowerCase()==='buy'&&!b.disabled)return b;}return null;}" +
-            "function inRange(a){var exact=Math.abs(s.cfg.minPrice-s.cfg.maxPrice)<0.01;return exact?Math.abs(a-s.cfg.minPrice)<0.01:(a+0.01>=s.cfg.minPrice&&a-0.01<=s.cfg.maxPrice);}" +
-            "function fire(e,k,x,y){try{e.dispatchEvent(new MouseEvent(k,{bubbles:true,cancelable:true,clientX:x,clientY:y,view:window}));}catch(z){try{e.dispatchEvent(new Event(k,{bubbles:true,cancelable:true}));}catch(q){}}}" +
-            "function tap(e){try{if(!vis(e))return false;var r=e.getBoundingClientRect(),x=Math.max(1,Math.min(innerWidth-2,r.left+r.width/2)),y=Math.max(1,Math.min(innerHeight-2,r.top+r.height/2));if(window.PointerEvent){try{e.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,clientX:x,clientY:y,pointerId:1,pointerType:'touch',isPrimary:true}));e.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,clientX:x,clientY:y,pointerId:1,pointerType:'touch',isPrimary:true}));}catch(p){}}['mousedown','mouseup','click'].forEach(function(k){fire(e,k,x,y);});if(e.click)e.click();return true;}catch(x){return false;}}" +
-            "function clickBuy(b){return tap(b);}" +
-            "function cleanKeys(){var n=Date.now();for(var k in s.clicked){if(s.clicked[k]<n)delete s.clicked[k];}}" +
-            "function rowKey(row,amt){return String(amt)+'|'+text(row).replace(/\\d{8,}/g,'').slice(0,170);}" +
-            "function skip(row,amt){cleanKeys();var k=rowKey(row,amt);return s.clicked[k]&&s.clicked[k]>Date.now();}" +
-            "function mark(row,amt,ms){s.clicked[rowKey(row,amt)]=Date.now()+ms;}" +
-            "function report(extra){var now=Date.now();if(now-s.lastReport<250&&!extra)return;s.lastReport=now;post('stats',Object.assign({},s.stats,extra||{}));}" +
-            "function stop(reason){s.run=false;if(s.timer)clearTimeout(s.timer);if(s.scanTimer)clearTimeout(s.scanTimer);try{if(s.observer)s.observer.disconnect();}catch(e){}post('running',{running:false,reason:reason||'Stopped'});report();}" +
-            "function tryBuy(){if(!s.run)return false;optimize();var now=Date.now();if(now<s.pauseUntil){report({state:'Cooling'});return false;}if(payment()){post('paymentDetected',{});stop('Payment page detected');return true;}if(siteWarning()){s.pauseUntil=Date.now()+s.cfg.warningPause;s.lastClick=Date.now();report({state:'Cooling'});return false;}if(failedToast()){s.lastFail=Date.now();s.lastClick=s.lastFail;switchTab();return false;}if(maybeLoading())return false;if(now-s.lastClick<s.cfg.postClickWait)return false;var rs=rows();s.stats.scanned+=rs.length;for(var i=0;i<rs.length&&i<120;i++){var row=rs[i],amt=rowAmount(row);if(!amt||!inRange(amt)||skip(row,amt))continue;var btn=available(row);if(!btn)continue;s.stats.eligible++;var checkAmt=rowAmount(row);if(!inRange(checkAmt)||skip(row,checkAmt))continue;s.lastClick=Date.now();mark(row,checkAmt,s.cfg.failCooldown);if(clickBuy(btn)){s.stats.clicked++;report({lastPrice:Math.round(checkAmt),state:'Running'});return true;}}return false;}" +
-            "function switchTab(){var now=Date.now();if(now<s.pauseUntil||now-s.lastTab<s.cfg.tabMinGap)return false;s.lastTab=now;var want=(s.tab++%2===0)?'Default':'Large';var ts=document.querySelectorAll(SEL.tabs);for(var i=0;i<ts.length;i++){var label=text(ts[i].querySelector('.txt')||ts[i]);if(label===want){tap(ts[i]);return true;}}return false;}" +
-            "function observe(){try{if(s.observer)s.observer.disconnect();var target=document.body;s.observer=new MutationObserver(function(){var now=Date.now();if(!s.run||now-s.lastObs<28)return;s.lastObs=now;if(failedToast()){s.lastFail=now;s.lastClick=now;switchTab();return;}if(maybeLoading())return;if(s.scanTimer)clearTimeout(s.scanTimer);s.scanTimer=setTimeout(function(){tryBuy();},16);});s.observer.observe(target,{childList:true,subtree:true,attributes:true,attributeFilter:['maximumamount','minimumamount','disabled','class','style']});}catch(e){post('engineError',{message:String(e&&e.message?e.message:e)});}}" +
-            "function loop(){if(!s.run)return;if(tryBuy()){s.timer=setTimeout(loop,s.cfg.postClickWait);return;}switchTab();s.scanTimer=setTimeout(function(){tryBuy();},s.cfg.cycleDelay);s.timer=setTimeout(loop,s.cfg.speedMs);}" +
-            "window.__ARB_SMART_BOT__={siteDom:true,start:function(c){norm(c);if(s.run)return;s.run=true;s.tab=0;s.pauseUntil=0;optimize();post('running',{running:true});observe();loop();},stop:function(){stop('Stopped by user');},updateConfig:function(c){norm(c);report();},ping:function(){post('ready',{href:location.href,engine:'hybrid-dom'});}};post('ready',{href:location.href,engine:'hybrid-dom'});return true;})();";
+        AmountHit(int amount, Rect amountBox) {
+            this.amount = amount;
+            this.amountBox = new Rect(amountBox);
+        }
+    }
+
 }
