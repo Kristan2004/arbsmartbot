@@ -76,11 +76,16 @@ public class MainActivity extends Activity {
     private FrameLayout root;
     private ImageView premiumBackdrop;
     private WebView webView;
+    private FrameLayout.LayoutParams webLayoutParams;
+    private FrameLayout.LayoutParams headerLayoutParams;
     private ProgressBar loader;
     private TextView webError;
     private ScrollView payScroll;
     private LinearLayout payScreen;
     private LinearLayout header;
+    private LinearLayout amountRow;
+    private LinearLayout speedRow;
+    private LinearLayout bottomRow;
     private TextView expiryText;
     private TextView statusText;
     private TextView statsText;
@@ -95,6 +100,7 @@ public class MainActivity extends Activity {
     private Button speed100Button;
     private Button speed150Button;
     private Button speed200Button;
+    private Button minimizeButton;
 
     private String deviceId;
     private String savedUuid = "";
@@ -111,14 +117,22 @@ public class MainActivity extends Activity {
     private int lastPrice = 0;
     private int tabIndex = 0;
     private int scanSpeedMs = 50;
+    private long nextVisualDelayMs = 0L;
+    private long pendingHitMs = 0L;
+    private AmountHit pendingHit;
     private boolean visualBusy = false;
+    private boolean headerMinimized = false;
     private boolean active = false;
     private boolean running = false;
     private boolean pendingStart = false;
     private TextRecognizer textRecognizer;
 
     private static final int HEADER_HEIGHT_DP = 216;
+    private static final int HEADER_MINIMIZED_HEIGHT_DP = 58;
     private static final int[] SPEED_OPTIONS_MS = new int[]{50, 100, 150, 200};
+    private static final String[] ORDER_TABS = new String[]{"default", "large", "small"};
+    private static final float[] ORDER_TAB_X = new float[]{0.14f, 0.33f, 0.52f};
+    private static final long VERIFY_WINDOW_MS = 900L;
     private static final long SITE_WARNING_PAUSE_MS = 12000L;
     private static final float MAX_CAPTURE_WIDTH = 720f;
     private static final float FALLBACK_BUY_X = 0.86f;
@@ -346,9 +360,9 @@ public class MainActivity extends Activity {
             view.requestFocus();
             return false;
         });
-        FrameLayout.LayoutParams webParams = frame(-1, -1, Gravity.BOTTOM);
-        webParams.topMargin = dp(HEADER_HEIGHT_DP);
-        root.addView(webView, webParams);
+        webLayoutParams = frame(-1, -1, Gravity.BOTTOM);
+        webLayoutParams.topMargin = dp(HEADER_HEIGHT_DP);
+        root.addView(webView, webLayoutParams);
 
         loader = new ProgressBar(this);
         root.addView(loader, frame(dp(54), dp(54), Gravity.CENTER));
@@ -377,7 +391,8 @@ public class MainActivity extends Activity {
         header.setPadding(dp(14), dp(8), dp(14), dp(9));
         header.setBackground(bg("#FB06100C", "#1B3B2D", 0));
         header.setElevation(dp(12));
-        root.addView(header, frame(-1, dp(HEADER_HEIGHT_DP), Gravity.TOP));
+        headerLayoutParams = frame(-1, dp(HEADER_HEIGHT_DP), Gravity.TOP);
+        root.addView(header, headerLayoutParams);
 
         LinearLayout top = row();
         LinearLayout titleBox = new LinearLayout(this);
@@ -392,19 +407,25 @@ public class MainActivity extends Activity {
         expiryText.setGravity(Gravity.CENTER);
         expiryText.setPadding(dp(10), dp(5), dp(10), dp(5));
         expiryText.setBackground(bg("#22180A", "#6B5520", dp(999)));
-        top.addView(expiryText, margins(dp(130), dp(32), dp(8), dp(3), 0, 0));
+        top.addView(expiryText, margins(dp(116), dp(32), dp(8), dp(3), dp(3), 0));
+        minimizeButton = smallButton("MIN");
+        minimizeButton.setTextColor(color("#FFE08A"));
+        minimizeButton.setBackground(bg("#201709", "#B9973B", dp(999)));
+        minimizeButton.setVisibility(View.GONE);
+        minimizeButton.setOnClickListener(v -> setHeaderMinimized(!headerMinimized));
+        top.addView(minimizeButton, margins(dp(52), dp(32), dp(3), dp(3), 0, 0));
         header.addView(top);
 
-        LinearLayout inputs = row();
+        amountRow = row();
         minInput = input("100");
         maxInput = input("10000");
         minInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
         maxInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        inputs.addView(box("MIN INR", minInput), weight());
-        inputs.addView(box("MAX INR", maxInput), weight());
-        header.addView(inputs, margins(-1, dp(52), 0, dp(6), 0, 0));
+        amountRow.addView(box("MIN INR", minInput), weight());
+        amountRow.addView(box("MAX INR", maxInput), weight());
+        header.addView(amountRow, margins(-1, dp(52), 0, dp(6), 0, 0));
 
-        LinearLayout speedRow = row();
+        speedRow = row();
         TextView speedLabel = label("SPEED", 10, "#8AE6AE", true);
         speedLabel.setGravity(Gravity.CENTER_VERTICAL);
         speedRow.addView(speedLabel, margins(dp(52), dp(32), dp(2), 0, dp(4), 0));
@@ -419,7 +440,7 @@ public class MainActivity extends Activity {
         header.addView(speedRow, margins(-1, dp(34), 0, dp(2), 0, 0));
         refreshSpeedButtons();
 
-        LinearLayout bottom = row();
+        bottomRow = row();
         LinearLayout statBox = new LinearLayout(this);
         statBox.setOrientation(LinearLayout.VERTICAL);
         statBox.setPadding(dp(2), 0, 0, 0);
@@ -437,11 +458,12 @@ public class MainActivity extends Activity {
             if (running) stopBot();
             else startBot();
         });
-        bottom.addView(statBox, weight());
-        bottom.addView(buyPage, margins(dp(70), dp(44), dp(4), 0, dp(4), 0));
-        bottom.addView(runButton, margins(dp(104), dp(44), dp(4), 0, 0, 0));
-        header.addView(bottom, margins(-1, dp(48), 0, dp(3), 0, 0));
+        bottomRow.addView(statBox, weight());
+        bottomRow.addView(buyPage, margins(dp(70), dp(44), dp(4), 0, dp(4), 0));
+        bottomRow.addView(runButton, margins(dp(104), dp(44), dp(4), 0, 0, 0));
+        header.addView(bottomRow, margins(-1, dp(48), 0, dp(3), 0, 0));
         refreshSpeedButtons();
+        applyHeaderMode();
     }
 
     private void buildPayScreen() {
@@ -581,7 +603,12 @@ public class MainActivity extends Activity {
         lastVisualMs = System.currentTimeMillis();
         visualPauseUntil = 0L;
         visualBusy = false;
+        pendingHit = null;
+        pendingHitMs = 0L;
+        nextVisualDelayMs = 0L;
         if (statusText != null) statusText.setText("Running");
+        if (minimizeButton != null) minimizeButton.setVisibility(View.VISIBLE);
+        applyHeaderMode();
         runButton.setText("STOP");
         runButton.setBackground(bg("#EF4444", "#EF4444", dp(8)));
         scheduleVisualScan(90L);
@@ -592,7 +619,12 @@ public class MainActivity extends Activity {
         running = false;
         pendingStart = false;
         visualBusy = false;
+        pendingHit = null;
+        pendingHitMs = 0L;
+        nextVisualDelayMs = 0L;
         handler.removeCallbacks(visualLoop);
+        setHeaderMinimized(false);
+        if (minimizeButton != null) minimizeButton.setVisibility(View.GONE);
         if (runButton != null) {
             runButton.setText("START");
             runButton.setBackground(bg("#0AF08A", "#0AF08A", dp(8)));
@@ -784,7 +816,11 @@ public class MainActivity extends Activity {
                 .addOnCompleteListener(task -> {
                     bitmap.recycle();
                     visualBusy = false;
-                    if (active && running) scheduleVisualScan(scanDelayMs());
+                    if (active && running) {
+                        long delay = nextVisualDelayMs > 0L ? nextVisualDelayMs : scanDelayMs();
+                        nextVisualDelayMs = 0L;
+                        scheduleVisualScan(delay);
+                    }
                 });
     }
 
@@ -796,7 +832,11 @@ public class MainActivity extends Activity {
         if (all.contains("select method payment") || all.contains("please select payment account")) {
             running = false;
             pendingStart = false;
+            pendingHit = null;
+            pendingHitMs = 0L;
             handler.removeCallbacks(visualLoop);
+            setHeaderMinimized(false);
+            if (minimizeButton != null) minimizeButton.setVisibility(View.GONE);
             if (runButton != null) {
                 runButton.setText("START");
                 runButton.setBackground(bg("#0AF08A", "#0AF08A", dp(8)));
@@ -807,6 +847,8 @@ public class MainActivity extends Activity {
             return;
         }
         if (isSiteWarning(all)) {
+            pendingHit = null;
+            pendingHitMs = 0L;
             visualPauseUntil = System.currentTimeMillis() + SITE_WARNING_PAUSE_MS;
             updateVisualStats("Cooling");
             return;
@@ -822,16 +864,24 @@ public class MainActivity extends Activity {
             long now = SystemClock.uptimeMillis();
             fitCount++;
             lastPrice = hit.amount;
-            updateVisualStats("Target " + hit.amount);
-            if (now - lastNativeClickMs >= buyTapGapMs()) {
+            if (matchesPendingHit(hit, width, height, now) && now - lastNativeClickMs >= buyTapGapMs()) {
                 lastNativeClickMs = now;
                 buyCount++;
+                pendingHit = null;
+                pendingHitMs = 0L;
                 tapWebPoint(hit.buyX / scale, hit.buyY / scale);
                 updateVisualStats("Buying " + hit.amount);
+            } else {
+                pendingHit = hit.copy();
+                pendingHitMs = now;
+                nextVisualDelayMs = verifyDelayMs();
+                updateVisualStats("Verify " + hit.amount);
             }
             return;
         }
 
+        pendingHit = null;
+        pendingHitMs = 0L;
         updateVisualStats("Scanning");
         maybeToggleOrderTab(items, width, height, scale);
     }
@@ -904,6 +954,16 @@ public class MainActivity extends Activity {
         return fallback;
     }
 
+    private boolean matchesPendingHit(AmountHit hit, int width, int height, long now) {
+        if (pendingHit == null || now - pendingHitMs > VERIFY_WINDOW_MS) return false;
+        if (hit.amount != pendingHit.amount) return false;
+        int rowTolerance = Math.max(26, Math.round(height * 0.035f));
+        int buyTolerance = Math.max(48, Math.round(width * 0.09f));
+        int rowDelta = Math.abs(hit.amountBox.centerY() - pendingHit.amountBox.centerY());
+        int buyDelta = Math.abs(hit.buyX - pendingHit.buyX) + Math.abs(hit.buyY - pendingHit.buyY);
+        return rowDelta <= rowTolerance && buyDelta <= buyTolerance;
+    }
+
     private int parseVisibleAmount(String raw) {
         String text = normalize(raw);
         if (text.length() == 0) return 0;
@@ -939,7 +999,8 @@ public class MainActivity extends Activity {
         long now = SystemClock.uptimeMillis();
         if (now - lastTabTapMs < tabTapGapMs()) return;
         lastTabTapMs = now;
-        String wanted = (tabIndex++ % 2 == 0) ? "default" : "large";
+        int wantedIndex = tabIndex++ % ORDER_TABS.length;
+        String wanted = ORDER_TABS[wantedIndex];
         for (OcrItem item : items) {
             String text = normalize(item.text);
             if (text.equals(wanted)) {
@@ -947,7 +1008,7 @@ public class MainActivity extends Activity {
                 return;
             }
         }
-        float x = "default".equals(wanted) ? width * 0.14f : width * 0.33f;
+        float x = width * ORDER_TAB_X[wantedIndex];
         float y = height * 0.29f;
         tapWebPoint(x / scale, y / scale);
     }
@@ -1004,8 +1065,12 @@ public class MainActivity extends Activity {
         return normalizeSpeed(scanSpeedMs);
     }
 
+    private long verifyDelayMs() {
+        return Math.max(25L, Math.min(80L, scanDelayMs()));
+    }
+
     private long tabTapGapMs() {
-        return Math.max(150L, scanDelayMs() * 3L);
+        return Math.max(50L, scanDelayMs());
     }
 
     private long buyTapGapMs() {
@@ -1024,6 +1089,27 @@ public class MainActivity extends Activity {
         if (button == null) return;
         button.setTextColor(color(selected ? "#03110A" : "#D8F4E5"));
         button.setBackground(bg(selected ? "#0AF08A" : "#0B1210", selected ? "#0AF08A" : "#244033", dp(999)));
+    }
+
+    private void setHeaderMinimized(boolean minimized) {
+        headerMinimized = running && minimized;
+        applyHeaderMode();
+    }
+
+    private void applyHeaderMode() {
+        int nextHeight = headerMinimized ? HEADER_MINIMIZED_HEIGHT_DP : HEADER_HEIGHT_DP;
+        if (amountRow != null) amountRow.setVisibility(headerMinimized ? View.GONE : View.VISIBLE);
+        if (speedRow != null) speedRow.setVisibility(headerMinimized ? View.GONE : View.VISIBLE);
+        if (bottomRow != null) bottomRow.setVisibility(headerMinimized ? View.GONE : View.VISIBLE);
+        if (minimizeButton != null) minimizeButton.setText(headerMinimized ? "MAX" : "MIN");
+        if (headerLayoutParams != null) {
+            headerLayoutParams.height = dp(nextHeight);
+            header.setLayoutParams(headerLayoutParams);
+        }
+        if (webLayoutParams != null) {
+            webLayoutParams.topMargin = dp(nextHeight);
+            webView.setLayoutParams(webLayoutParams);
+        }
     }
 
     private int parse(EditText input, int fallback) {
@@ -1158,6 +1244,13 @@ public class MainActivity extends Activity {
         AmountHit(int amount, Rect amountBox) {
             this.amount = amount;
             this.amountBox = new Rect(amountBox);
+        }
+
+        AmountHit copy() {
+            AmountHit clone = new AmountHit(amount, amountBox);
+            clone.buyX = buyX;
+            clone.buyY = buyY;
+            return clone;
         }
     }
 
