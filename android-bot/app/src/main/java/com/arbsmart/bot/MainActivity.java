@@ -819,9 +819,10 @@ public class MainActivity extends Activity {
             return;
         }
         visualBusy = true;
+        List<BuyTarget> visualBuyTargets = findVisualBuyTargets(bitmap);
         InputImage image = InputImage.fromBitmap(bitmap, 0);
         textRecognizer.process(image)
-                .addOnSuccessListener(text -> handleVisualText(text, bitmapWidth, bitmapHeight, scale))
+                .addOnSuccessListener(text -> handleVisualText(text, bitmapWidth, bitmapHeight, scale, visualBuyTargets))
                 .addOnFailureListener(e -> updateVisualStats("OCR Recovery"))
                 .addOnCompleteListener(task -> {
                     bitmap.recycle();
@@ -834,7 +835,7 @@ public class MainActivity extends Activity {
                 });
     }
 
-    private void handleVisualText(Text result, int width, int height, float scale) {
+    private void handleVisualText(Text result, int width, int height, float scale, List<BuyTarget> visualBuyTargets) {
         if (!active || !running) return;
         lastVisualMs = System.currentTimeMillis();
         scanCount++;
@@ -868,8 +869,8 @@ public class MainActivity extends Activity {
         int min = parse(minInput, 100);
         int max = parse(maxInput, 10000);
         List<AmountHit> amounts = findAmounts(items, width, height, min, max);
-        List<OcrItem> buyButtons = findBuyButtons(items, width, height);
-        AmountHit hit = chooseBuyTarget(amounts, buyButtons, width, height);
+        List<BuyTarget> buyTargets = findBuyTargets(items, visualBuyTargets, width, height);
+        AmountHit hit = chooseBuyTarget(amounts, buyTargets, width, height);
         if (hit != null) {
             long now = SystemClock.uptimeMillis();
             fitCount++;
@@ -943,7 +944,7 @@ public class MainActivity extends Activity {
             String rowText = rowTextFor(item, items, width, height);
             double reward = parseReward(rowText, amount);
             double profitPct = amount > 0 && reward > 0d ? (reward / amount) * 100d : 0d;
-            if (reward <= 0d || profitPct + 0.0001d < MIN_PROFIT_PERCENT) continue;
+            if (reward > 0d && profitPct + 0.0001d < MIN_PROFIT_PERCENT) continue;
             AmountHit hit = new AmountHit(amount, item.box);
             hit.reward = reward;
             hit.profitPct = profitPct;
@@ -953,31 +954,122 @@ public class MainActivity extends Activity {
         return out;
     }
 
-    private List<OcrItem> findBuyButtons(List<OcrItem> items, int width, int height) {
-        List<OcrItem> out = new ArrayList<>();
+    private List<BuyTarget> findBuyTargets(List<OcrItem> items, List<BuyTarget> visualBuyTargets, int width, int height) {
+        List<BuyTarget> out = new ArrayList<>();
+        if (visualBuyTargets != null) out.addAll(visualBuyTargets);
         for (OcrItem item : items) {
             String t = normalize(item.text);
             if (item.box.centerX() < width * 0.55f || item.box.centerY() < height * 0.18f) continue;
-            if ("buy".equals(t) || t.matches(".*\\bbuy\\b.*")) out.add(item);
+            if (("buy".equals(t) || t.matches(".*\\bbuy\\b.*"))
+                    && !hasNearbyBuyTarget(out, item.box.centerX(), item.box.centerY(), width, height)) {
+                out.add(new BuyTarget(item.box, false));
+            }
         }
         return out;
     }
 
-    private AmountHit chooseBuyTarget(List<AmountHit> amounts, List<OcrItem> buyButtons, int width, int height) {
+    private boolean hasNearbyBuyTarget(List<BuyTarget> targets, int x, int y, int width, int height) {
+        int xTolerance = Math.max(36, Math.round(width * 0.08f));
+        int yTolerance = Math.max(24, Math.round(height * 0.035f));
+        for (BuyTarget target : targets) {
+            if (Math.abs(target.centerX() - x) <= xTolerance && Math.abs(target.centerY() - y) <= yTolerance) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<BuyTarget> findVisualBuyTargets(Bitmap bitmap) {
+        List<BuyTarget> out = new ArrayList<>();
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        int scanStartX = Math.round(width * 0.55f);
+        int scanStartY = Math.round(height * 0.20f);
+        int scanEndY = Math.round(height * 0.98f);
+        int minYellowPixels = Math.max(18, Math.round(width * 0.035f));
+        boolean inBand = false;
+        int bandTop = 0;
+        int bandBottom = 0;
+        int bandMinX = width;
+        int bandMaxX = 0;
+        int emptyRows = 0;
+
+        for (int y = scanStartY; y < scanEndY; y += 2) {
+            int count = 0;
+            int rowMinX = width;
+            int rowMaxX = 0;
+            for (int x = scanStartX; x < width - 2; x += 2) {
+                if (!isBuyYellow(bitmap.getPixel(x, y))) continue;
+                count++;
+                if (x < rowMinX) rowMinX = x;
+                if (x > rowMaxX) rowMaxX = x;
+            }
+            if (count >= minYellowPixels) {
+                if (!inBand) {
+                    inBand = true;
+                    bandTop = y;
+                    bandMinX = rowMinX;
+                    bandMaxX = rowMaxX;
+                }
+                bandBottom = y;
+                if (rowMinX < bandMinX) bandMinX = rowMinX;
+                if (rowMaxX > bandMaxX) bandMaxX = rowMaxX;
+                emptyRows = 0;
+            } else if (inBand) {
+                emptyRows += 2;
+                if (emptyRows >= 10) {
+                    addVisualBuyTarget(out, bandMinX, bandTop, bandMaxX, bandBottom, width, height);
+                    inBand = false;
+                    bandMinX = width;
+                    bandMaxX = 0;
+                    emptyRows = 0;
+                }
+            }
+        }
+        if (inBand) addVisualBuyTarget(out, bandMinX, bandTop, bandMaxX, bandBottom, width, height);
+        return out;
+    }
+
+    private void addVisualBuyTarget(List<BuyTarget> out, int minX, int top, int maxX, int bottom, int width, int height) {
+        int bandWidth = maxX - minX + 1;
+        int bandHeight = bottom - top + 1;
+        if (bandWidth < Math.max(58, Math.round(width * 0.10f))) return;
+        if (bandHeight < Math.max(18, Math.round(height * 0.018f))) return;
+        int centerX = (minX + maxX) / 2;
+        int centerY = (top + bottom) / 2;
+        if (centerX < width * 0.62f || centerY < height * 0.20f) return;
+        if (hasNearbyBuyTarget(out, centerX, centerY, width, height)) return;
+        Rect box = new Rect(
+                Math.max(0, minX - 8),
+                Math.max(0, top - 6),
+                Math.min(width, maxX + 8),
+                Math.min(height, bottom + 6)
+        );
+        out.add(new BuyTarget(box, true));
+    }
+
+    private boolean isBuyYellow(int pixel) {
+        int r = Color.red(pixel);
+        int g = Color.green(pixel);
+        int b = Color.blue(pixel);
+        return r >= 218 && g >= 145 && g <= 225 && b <= 90 && r - b >= 145 && g - b >= 65;
+    }
+
+    private AmountHit chooseBuyTarget(List<AmountHit> amounts, List<BuyTarget> buyTargets, int width, int height) {
         AmountHit best = null;
         int bestScore = Integer.MAX_VALUE;
         int maxRowGap = Math.max(70, Math.round(height * 0.085f));
         for (AmountHit amount : amounts) {
-            for (OcrItem buy : buyButtons) {
-                if (buy.box.centerX() <= amount.amountBox.centerX()) continue;
-                int rowGap = Math.abs(buy.box.centerY() - amount.amountBox.centerY());
+            for (BuyTarget buy : buyTargets) {
+                if (buy.centerX() <= amount.amountBox.centerX()) continue;
+                int rowGap = Math.abs(buy.centerY() - amount.amountBox.centerY());
                 if (rowGap > maxRowGap) continue;
-                int score = rowGap + Math.max(0, amount.amountBox.centerX() - buy.box.centerX());
+                int score = rowGap + (buy.visual ? 0 : 18);
                 if (score < bestScore) {
                     bestScore = score;
                     best = amount.copy();
-                    best.buyX = buy.box.centerX();
-                    best.buyY = buy.box.centerY();
+                    best.buyX = buy.centerX();
+                    best.buyY = buy.centerY();
                 }
             }
         }
@@ -991,7 +1083,8 @@ public class MainActivity extends Activity {
     private boolean matchesPendingHit(AmountHit hit, int width, int height, long now) {
         if (pendingHit == null || now - pendingHitMs > VERIFY_WINDOW_MS) return false;
         if (hit.amount != pendingHit.amount) return false;
-        if (Math.abs(hit.reward - pendingHit.reward) > Math.max(1d, pendingHit.reward * 0.25d)) return false;
+        if (hit.reward > 0d && pendingHit.reward > 0d
+                && Math.abs(hit.reward - pendingHit.reward) > Math.max(1d, pendingHit.reward * 0.25d)) return false;
         int rowTolerance = Math.max(26, Math.round(height * 0.035f));
         int buyTolerance = Math.max(48, Math.round(width * 0.09f));
         int rowDelta = Math.abs(hit.amountBox.centerY() - pendingHit.amountBox.centerY());
@@ -1061,7 +1154,7 @@ public class MainActivity extends Activity {
         float x = width * ORDER_TAB_X[wantedIndex];
         float y = Math.min(height * 0.42f, width * ORDER_TAB_Y_BY_WIDTH);
         tapWebPoint(x / scale, y / scale);
-        nextVisualDelayMs = 20L;
+        nextVisualDelayMs = Math.max(55L, Math.min(90L, scanDelayMs() + 10L));
     }
 
     private void tapWebPoint(float x, float y) {
@@ -1119,7 +1212,7 @@ public class MainActivity extends Activity {
     }
 
     private long verifyDelayMs() {
-        return Math.max(25L, Math.min(80L, scanDelayMs()));
+        return Math.max(15L, Math.min(35L, scanDelayMs() / 2L));
     }
 
     private long buyTapGapMs() {
@@ -1287,6 +1380,24 @@ public class MainActivity extends Activity {
         OcrItem(String text, Rect box) {
             this.text = text;
             this.box = new Rect(box);
+        }
+    }
+
+    private static class BuyTarget {
+        final Rect box;
+        final boolean visual;
+
+        BuyTarget(Rect box, boolean visual) {
+            this.box = new Rect(box);
+            this.visual = visual;
+        }
+
+        int centerX() {
+            return box.centerX();
+        }
+
+        int centerY() {
+            return box.centerY();
         }
     }
 
