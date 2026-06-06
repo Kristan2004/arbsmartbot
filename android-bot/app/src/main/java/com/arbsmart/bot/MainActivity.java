@@ -115,6 +115,8 @@ public class MainActivity extends Activity {
     private int fitCount = 0;
     private int buyCount = 0;
     private int lastPrice = 0;
+    private double lastReward = 0d;
+    private double lastProfitPct = 0d;
     private int tabIndex = 0;
     private int scanSpeedMs = 50;
     private long nextVisualDelayMs = 0L;
@@ -130,33 +132,27 @@ public class MainActivity extends Activity {
     private static final int HEADER_HEIGHT_DP = 216;
     private static final int HEADER_MINIMIZED_HEIGHT_DP = 58;
     private static final int[] SPEED_OPTIONS_MS = new int[]{50, 100, 150, 200};
-    private static final String[] ORDER_TABS = new String[]{"large", "small", "default"};
-    private static final float[] ORDER_TAB_X = new float[]{0.33f, 0.52f, 0.14f};
+    private static final String[] ORDER_TABS = new String[]{"default", "large"};
+    private static final float[] ORDER_TAB_X = new float[]{0.14f, 0.33f};
     private static final float ORDER_TAB_Y_BY_WIDTH = 0.56f;
-    private static final long TAB_CYCLE_MS = 1000L;
     private static final long VERIFY_WINDOW_MS = 900L;
+    private static final long BUY_COOLDOWN_MS = 700L;
     private static final long SITE_WARNING_PAUSE_MS = 12000L;
+    private static final double MIN_PROFIT_PERCENT = 2d;
     private static final float MAX_CAPTURE_WIDTH = 720f;
     private static final float FALLBACK_BUY_X = 0.86f;
     private static final float FALLBACK_BUY_Y_OFFSET = 0.032f;
     private static final Pattern MONEY_PATTERN = Pattern.compile("(?:\\u20B9|rs\\.?|inr)\\s*([0-9]{2,7})", Pattern.CASE_INSENSITIVE);
     private static final Pattern PLAIN_AMOUNT_PATTERN = Pattern.compile("^\\s*([0-9]{2,7})\\s*$");
     private static final Pattern LEADING_AMOUNT_PATTERN = Pattern.compile("^\\s*[^0-9]{0,4}([0-9]{2,7})\\s*(?:upi|bank|usdt|arb)?\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern REWARD_PATTERN = Pattern.compile("reward\\s*\\+?\\s*(?:\\u20B9|rs\\.?|inr)?\\s*([0-9]{1,7}(?:\\.[0-9]+)?)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern NUMBER_PATTERN = Pattern.compile("([0-9]{1,7}(?:\\.[0-9]+)?)");
 
     private final Runnable visualLoop = new Runnable() {
         @Override
         public void run() {
             if (!active || !running) return;
             runVisualScan();
-        }
-    };
-
-    private final Runnable tabCycleLoop = new Runnable() {
-        @Override
-        public void run() {
-            if (!active || !running) return;
-            runTimedTabCycle();
-            if (active && running) handler.postDelayed(this, TAB_CYCLE_MS);
         }
     };
 
@@ -623,7 +619,6 @@ public class MainActivity extends Activity {
         runButton.setText("STOP");
         runButton.setBackground(bg("#EF4444", "#EF4444", dp(8)));
         scheduleVisualScan(90L);
-        scheduleTabCycle(120L);
         if (announce) toast("Bot started");
     }
 
@@ -635,7 +630,6 @@ public class MainActivity extends Activity {
         pendingHitMs = 0L;
         nextVisualDelayMs = 0L;
         handler.removeCallbacks(visualLoop);
-        handler.removeCallbacks(tabCycleLoop);
         setHeaderMinimized(false);
         if (minimizeButton != null) minimizeButton.setVisibility(View.GONE);
         if (runButton != null) {
@@ -774,6 +768,8 @@ public class MainActivity extends Activity {
         fitCount = 0;
         buyCount = 0;
         lastPrice = 0;
+        lastReward = 0d;
+        lastProfitPct = 0d;
         tabIndex = 0;
         lastTabTapMs = 0L;
         visualPauseUntil = 0L;
@@ -783,11 +779,6 @@ public class MainActivity extends Activity {
     private void scheduleVisualScan(long delayMs) {
         handler.removeCallbacks(visualLoop);
         if (active && running) handler.postDelayed(visualLoop, Math.max(20L, delayMs));
-    }
-
-    private void scheduleTabCycle(long delayMs) {
-        handler.removeCallbacks(tabCycleLoop);
-        if (active && running) handler.postDelayed(tabCycleLoop, Math.max(0L, delayMs));
     }
 
     private void runVisualScan() {
@@ -854,7 +845,6 @@ public class MainActivity extends Activity {
             pendingHit = null;
             pendingHitMs = 0L;
             handler.removeCallbacks(visualLoop);
-            handler.removeCallbacks(tabCycleLoop);
             setHeaderMinimized(false);
             if (minimizeButton != null) minimizeButton.setVisibility(View.GONE);
             if (runButton != null) {
@@ -884,6 +874,8 @@ public class MainActivity extends Activity {
             long now = SystemClock.uptimeMillis();
             fitCount++;
             lastPrice = hit.amount;
+            lastReward = hit.reward;
+            lastProfitPct = hit.profitPct;
             if (matchesPendingHit(hit, width, height, now) && now - lastNativeClickMs >= buyTapGapMs()) {
                 lastNativeClickMs = now;
                 buyCount++;
@@ -903,6 +895,7 @@ public class MainActivity extends Activity {
         pendingHit = null;
         pendingHitMs = 0L;
         updateVisualStats("Scanning");
+        switchOrderTabAfterScan(width, height, scale);
     }
 
     private List<OcrItem> collectOcrItems(Text result) {
@@ -926,6 +919,19 @@ public class MainActivity extends Activity {
         items.add(new OcrItem(clean, box));
     }
 
+    private String rowTextFor(OcrItem anchor, List<OcrItem> items, int width, int height) {
+        int rowGap = Math.max(42, Math.round(height * 0.055f));
+        StringBuilder out = new StringBuilder();
+        for (OcrItem item : items) {
+            if (item.box.centerY() < height * 0.18f) continue;
+            if (item.box.centerX() > width * 0.82f) continue;
+            if (Math.abs(item.box.centerY() - anchor.box.centerY()) > rowGap) continue;
+            if (out.length() > 0) out.append(' ');
+            out.append(item.text);
+        }
+        return out.toString();
+    }
+
     private List<AmountHit> findAmounts(List<OcrItem> items, int width, int height, int min, int max) {
         List<AmountHit> out = new ArrayList<>();
         for (OcrItem item : items) {
@@ -933,7 +939,16 @@ public class MainActivity extends Activity {
             int amount = parseVisibleAmount(item.text);
             if (amount <= 0) continue;
             boolean inRange = min == max ? amount == min : amount >= min && amount <= max;
-            if (inRange) out.add(new AmountHit(amount, item.box));
+            if (!inRange) continue;
+            String rowText = rowTextFor(item, items, width, height);
+            double reward = parseReward(rowText, amount);
+            double profitPct = amount > 0 && reward > 0d ? (reward / amount) * 100d : 0d;
+            if (reward <= 0d || profitPct + 0.0001d < MIN_PROFIT_PERCENT) continue;
+            AmountHit hit = new AmountHit(amount, item.box);
+            hit.reward = reward;
+            hit.profitPct = profitPct;
+            hit.rowText = rowText;
+            out.add(hit);
         }
         return out;
     }
@@ -960,7 +975,7 @@ public class MainActivity extends Activity {
                 int score = rowGap + Math.max(0, amount.amountBox.centerX() - buy.box.centerX());
                 if (score < bestScore) {
                     bestScore = score;
-                    best = new AmountHit(amount.amount, amount.amountBox);
+                    best = amount.copy();
                     best.buyX = buy.box.centerX();
                     best.buyY = buy.box.centerY();
                 }
@@ -976,6 +991,7 @@ public class MainActivity extends Activity {
     private boolean matchesPendingHit(AmountHit hit, int width, int height, long now) {
         if (pendingHit == null || now - pendingHitMs > VERIFY_WINDOW_MS) return false;
         if (hit.amount != pendingHit.amount) return false;
+        if (Math.abs(hit.reward - pendingHit.reward) > Math.max(1d, pendingHit.reward * 0.25d)) return false;
         int rowTolerance = Math.max(26, Math.round(height * 0.035f));
         int buyTolerance = Math.max(48, Math.round(width * 0.09f));
         int rowDelta = Math.abs(hit.amountBox.centerY() - pendingHit.amountBox.centerY());
@@ -997,6 +1013,28 @@ public class MainActivity extends Activity {
         return 0;
     }
 
+    private double parseReward(String raw, int amount) {
+        Matcher reward = REWARD_PATTERN.matcher(raw == null ? "" : raw);
+        if (reward.find()) {
+            try {
+                return Double.parseDouble(reward.group(1).replaceAll("[^0-9.]", ""));
+            } catch (Exception ignored) {
+                return 0d;
+            }
+        }
+        double smallest = 0d;
+        Matcher number = NUMBER_PATTERN.matcher(raw == null ? "" : raw);
+        while (number.find()) {
+            try {
+                double value = Double.parseDouble(number.group(1));
+                if (value <= 0d || Math.abs(value - amount) < 0.001d || value > amount) continue;
+                if (smallest == 0d || value < smallest) smallest = value;
+            } catch (Exception ignored) {
+            }
+        }
+        return smallest;
+    }
+
     private int safeAmount(String value) {
         try {
             return Integer.parseInt(value.replaceAll("[^0-9]", ""));
@@ -1014,19 +1052,15 @@ public class MainActivity extends Activity {
                 || text.contains("abnormal");
     }
 
-    private void runTimedTabCycle() {
+    private void switchOrderTabAfterScan(int width, int height, float scale) {
         if (webView == null || !String.valueOf(webView.getUrl()).contains("/#/buy/arb")) return;
-        long now = SystemClock.uptimeMillis();
-        if (now < visualPauseUntil || pendingHit != null) return;
-        if (now - lastTabTapMs < TAB_CYCLE_MS - 80L) return;
-        int width = webView.getWidth();
-        int height = webView.getHeight();
-        if (width < 80 || height < 160) return;
+        if (pendingHit != null || System.currentTimeMillis() < visualPauseUntil) return;
+        if (width < 80 || height < 160 || scale <= 0f) return;
         int wantedIndex = tabIndex++ % ORDER_TABS.length;
-        lastTabTapMs = now;
+        lastTabTapMs = SystemClock.uptimeMillis();
         float x = width * ORDER_TAB_X[wantedIndex];
         float y = Math.min(height * 0.42f, width * ORDER_TAB_Y_BY_WIDTH);
-        tapWebPoint(x, y);
+        tapWebPoint(x / scale, y / scale);
         nextVisualDelayMs = 20L;
     }
 
@@ -1053,7 +1087,9 @@ public class MainActivity extends Activity {
     private void updateVisualStats(String state) {
         if (statusText != null && running) statusText.setText(state == null || state.length() == 0 ? "Running" : state);
         if (statsText == null) return;
-        String suffix = lastPrice > 0 ? "  Last " + lastPrice : "";
+        String suffix = lastPrice > 0
+                ? "  Last " + lastPrice + " +" + trimDouble(lastReward) + " " + trimDouble(lastProfitPct) + "%"
+                : "";
         statsText.setText("Scan " + scanCount + "  Fit " + fitCount + "  Buy " + buyCount + suffix);
     }
 
@@ -1087,7 +1123,13 @@ public class MainActivity extends Activity {
     }
 
     private long buyTapGapMs() {
-        return Math.max(120L, scanDelayMs() + 90L);
+        return Math.max(BUY_COOLDOWN_MS, scanDelayMs() + 90L);
+    }
+
+    private String trimDouble(double value) {
+        if (value <= 0d) return "0";
+        if (Math.abs(value - Math.round(value)) < 0.001d) return String.valueOf(Math.round(value));
+        return String.format(Locale.US, "%.1f", value);
     }
 
     private void refreshSpeedButtons() {
@@ -1251,6 +1293,9 @@ public class MainActivity extends Activity {
     private static class AmountHit {
         final int amount;
         final Rect amountBox;
+        double reward;
+        double profitPct;
+        String rowText = "";
         int buyX;
         int buyY;
 
@@ -1261,6 +1306,9 @@ public class MainActivity extends Activity {
 
         AmountHit copy() {
             AmountHit clone = new AmountHit(amount, amountBox);
+            clone.reward = reward;
+            clone.profitPct = profitPct;
+            clone.rowText = rowText;
             clone.buyX = buyX;
             clone.buyY = buyY;
             return clone;
