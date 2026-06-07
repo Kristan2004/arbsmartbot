@@ -138,7 +138,9 @@ public class MainActivity extends Activity {
     private static final float[] ORDER_TAB_X = new float[]{0.14f, 0.33f};
     private static final float ORDER_TAB_Y_BY_WIDTH = 0.56f;
     private static final long VERIFY_WINDOW_MS = 900L;
-    private static final long BUY_COOLDOWN_MS = 700L;
+    private static final long BUY_COOLDOWN_MS = 320L;
+    private static final long TAB_CYCLE_MS = 420L;
+    private static final long TAB_MIN_GAP_MS = 240L;
     private static final long SITE_WARNING_PAUSE_MS = 12000L;
     private static final double MIN_PROFIT_PERCENT = 2d;
     private static final float MAX_CAPTURE_WIDTH = 720f;
@@ -155,6 +157,15 @@ public class MainActivity extends Activity {
         public void run() {
             if (!active || !running) return;
             runVisualScan();
+        }
+    };
+
+    private final Runnable tabCycleLoop = new Runnable() {
+        @Override
+        public void run() {
+            if (!active || !running) return;
+            switchOrderTabFromTimer();
+            if (active && running) handler.postDelayed(this, TAB_CYCLE_MS);
         }
     };
 
@@ -300,16 +311,23 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
-                loader.setVisibility(View.VISIBLE);
+                loader.setVisibility(running ? View.GONE : View.VISIBLE);
                 webError.setVisibility(View.GONE);
-                if (running && statusText != null) statusText.setText("Loading Buy Page");
+                if (running) {
+                    if (statusText != null) statusText.setText("Running");
+                    scheduleVisualScan(20L);
+                    scheduleTabCycle(35L);
+                }
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
                 loader.setVisibility(View.GONE);
-                if (active && (running || pendingStart)) {
+                if (active && pendingStart) {
                     handler.postDelayed(() -> startBotEngine(false), 180);
+                } else if (active && running) {
+                    scheduleVisualScan(20L);
+                    scheduleTabCycle(35L);
                 }
             }
 
@@ -621,6 +639,7 @@ public class MainActivity extends Activity {
         runButton.setText("STOP");
         runButton.setBackground(bg("#EF4444", "#EF4444", dp(8)));
         scheduleVisualScan(90L);
+        scheduleTabCycle(120L);
         if (announce) toast("Bot started");
     }
 
@@ -632,6 +651,7 @@ public class MainActivity extends Activity {
         pendingHitMs = 0L;
         nextVisualDelayMs = 0L;
         handler.removeCallbacks(visualLoop);
+        handler.removeCallbacks(tabCycleLoop);
         setHeaderMinimized(false);
         if (minimizeButton != null) minimizeButton.setVisibility(View.GONE);
         if (runButton != null) {
@@ -785,6 +805,11 @@ public class MainActivity extends Activity {
         if (active && running) handler.postDelayed(visualLoop, Math.max(20L, delayMs));
     }
 
+    private void scheduleTabCycle(long delayMs) {
+        handler.removeCallbacks(tabCycleLoop);
+        if (active && running) handler.postDelayed(tabCycleLoop, Math.max(0L, delayMs));
+    }
+
     private void runVisualScan() {
         if (!active || !running || webView == null || textRecognizer == null) return;
         if (visualBusy) {
@@ -844,12 +869,14 @@ public class MainActivity extends Activity {
         lastVisualMs = System.currentTimeMillis();
         scanCount++;
         String all = normalize(result.getText());
+        boolean loadingScreen = isLoadingScreen(all);
         if (all.contains("select method payment") || all.contains("please select payment account")) {
             running = false;
             pendingStart = false;
             pendingHit = null;
             pendingHitMs = 0L;
             handler.removeCallbacks(visualLoop);
+            handler.removeCallbacks(tabCycleLoop);
             setHeaderMinimized(false);
             if (minimizeButton != null) minimizeButton.setVisibility(View.GONE);
             if (runButton != null) {
@@ -901,8 +928,8 @@ public class MainActivity extends Activity {
 
         pendingHit = null;
         pendingHitMs = 0L;
-        updateVisualStats("Scanning");
-        switchOrderTabAfterScan(width, height, scale);
+        updateVisualStats(loadingScreen ? "Loading Scan" : "Scanning");
+        switchOrderTabAfterScan(width, height, scale, loadingScreen);
     }
 
     private List<OcrItem> collectOcrItems(Text result) {
@@ -1169,12 +1196,38 @@ public class MainActivity extends Activity {
                 || text.contains("abnormal");
     }
 
-    private void switchOrderTabAfterScan(int width, int height, float scale) {
+    private boolean isLoadingScreen(String text) {
+        return text.contains("loading")
+                || text.contains("please wait")
+                || text.contains("refreshing")
+                || text.contains("load more");
+    }
+
+    private void switchOrderTabFromTimer() {
         if (webView == null || !String.valueOf(webView.getUrl()).contains("/#/buy/arb")) return;
-        if (pendingHit != null || System.currentTimeMillis() < visualPauseUntil) return;
+        if (System.currentTimeMillis() < visualPauseUntil) return;
+        if (SystemClock.uptimeMillis() - lastNativeClickMs < 260L) return;
+        int width = webView.getWidth();
+        int height = webView.getHeight();
+        if (width < 80 || height < 160) return;
+        switchOrderTab(width, height, 1f, false);
+    }
+
+    private void switchOrderTabAfterScan(int width, int height, float scale, boolean forceLoading) {
+        if (webView == null || !String.valueOf(webView.getUrl()).contains("/#/buy/arb")) return;
+        if (!forceLoading && pendingHit != null) return;
+        if (System.currentTimeMillis() < visualPauseUntil) return;
         if (width < 80 || height < 160 || scale <= 0f) return;
+        switchOrderTab(width, height, scale, forceLoading);
+    }
+
+    private void switchOrderTab(int width, int height, float scale, boolean force) {
+        long now = SystemClock.uptimeMillis();
+        long minGap = force ? 170L : TAB_MIN_GAP_MS;
+        if (now - lastTabTapMs < minGap) return;
+        if (now - lastNativeClickMs < 260L) return;
         int wantedIndex = tabIndex++ % ORDER_TABS.length;
-        lastTabTapMs = SystemClock.uptimeMillis();
+        lastTabTapMs = now;
         float x = width * ORDER_TAB_X[wantedIndex];
         float y = Math.min(height * 0.42f, width * ORDER_TAB_Y_BY_WIDTH);
         tapWebPoint(x / scale, y / scale);
