@@ -100,6 +100,7 @@ public class MainActivity extends Activity {
     private Button speed100Button;
     private Button speed150Button;
     private Button speed200Button;
+    private Button paymentButton;
     private Button minimizeButton;
 
     private String deviceId;
@@ -121,19 +122,23 @@ public class MainActivity extends Activity {
     private double lastProfitPct = 0d;
     private int tabIndex = 0;
     private int scanSpeedMs = 50;
+    private String paymentChoice = "AUTO";
     private long nextVisualDelayMs = 0L;
     private long pendingHitMs = 0L;
+    private long lastPaymentTapMs = 0L;
     private AmountHit pendingHit;
     private boolean visualBusy = false;
     private boolean headerMinimized = false;
     private boolean active = false;
     private boolean running = false;
     private boolean pendingStart = false;
+    private boolean paymentPageActive = false;
     private TextRecognizer textRecognizer;
 
     private static final int HEADER_HEIGHT_DP = 216;
     private static final int HEADER_MINIMIZED_HEIGHT_DP = 58;
     private static final int[] SPEED_OPTIONS_MS = new int[]{50, 100, 150, 200};
+    private static final String[] PAYMENT_CHOICES = new String[]{"AUTO", "PHONEPE", "SUPER", "AIRTEL", "FREECHG"};
     private static final String[] ORDER_TABS = new String[]{"default", "large"};
     private static final float[] ORDER_TAB_X = new float[]{0.14f, 0.33f};
     private static final float ORDER_TAB_Y_BY_WIDTH = 0.56f;
@@ -141,6 +146,7 @@ public class MainActivity extends Activity {
     private static final long BUY_COOLDOWN_MS = 320L;
     private static final long TAB_CYCLE_MS = 420L;
     private static final long TAB_MIN_GAP_MS = 240L;
+    private static final long PAYMENT_TAP_GAP_MS = 850L;
     private static final long SITE_WARNING_PAUSE_MS = 12000L;
     private static final double MIN_PROFIT_PERCENT = 2d;
     private static final float MAX_CAPTURE_WIDTH = 720f;
@@ -164,6 +170,7 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             if (!active || !running) return;
+            if (paymentPageActive) return;
             switchOrderTabFromTimer();
             if (active && running) handler.postDelayed(this, TAB_CYCLE_MS);
         }
@@ -175,7 +182,9 @@ public class MainActivity extends Activity {
             if (active && running) {
                 long now = System.currentTimeMillis();
                 String url = webView == null ? "" : String.valueOf(webView.getUrl());
-                if (!url.contains("/#/buy/arb")) {
+                if (paymentPageActive) {
+                    if (statusText != null) statusText.setText("Payment " + paymentChoiceLabel());
+                } else if (!url.contains("/#/buy/arb")) {
                     pendingStart = true;
                     if (statusText != null) statusText.setText("Opening Buy");
                     webView.loadUrl(BUY_URL);
@@ -217,6 +226,7 @@ public class MainActivity extends Activity {
         savedUuid = prefs.getString("uuid", "");
         expiryMs = prefs.getLong("expiry_ms", 0L);
         scanSpeedMs = normalizeSpeed(prefs.getInt("scan_speed_ms", 50));
+        paymentChoice = normalizePaymentChoice(prefs.getString("payment_choice", "AUTO"));
         textRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
         buildUi();
         setupWebView();
@@ -311,6 +321,7 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                if (url != null && url.contains("/#/buy/arb")) paymentPageActive = false;
                 loader.setVisibility(running ? View.GONE : View.VISIBLE);
                 webError.setVisibility(View.GONE);
                 if (running) {
@@ -322,6 +333,7 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageFinished(WebView view, String url) {
+                if (url != null && url.contains("/#/buy/arb")) paymentPageActive = false;
                 loader.setVisibility(View.GONE);
                 if (active && pendingStart) {
                     handler.postDelayed(() -> startBotEngine(false), 180);
@@ -480,16 +492,22 @@ public class MainActivity extends Activity {
         buyPage.setTextColor(color("#FFE08A"));
         buyPage.setBackground(bg("#201709", "#B9973B", dp(999)));
         buyPage.setOnClickListener(v -> webView.loadUrl(BUY_URL));
+        paymentButton = smallButton("P " + paymentChoiceLabel());
+        paymentButton.setTextColor(color("#FFE08A"));
+        paymentButton.setBackground(bg("#201709", "#B9973B", dp(999)));
+        paymentButton.setOnClickListener(v -> cyclePaymentChoice());
         runButton = button("START", "#0AF08A", "#03110A", 15);
         runButton.setOnClickListener(v -> {
             if (running) stopBot();
             else startBot();
         });
         bottomRow.addView(statBox, weight());
-        bottomRow.addView(buyPage, margins(dp(70), dp(44), dp(4), 0, dp(4), 0));
-        bottomRow.addView(runButton, margins(dp(104), dp(44), dp(4), 0, 0, 0));
+        bottomRow.addView(buyPage, margins(dp(58), dp(44), dp(4), 0, dp(3), 0));
+        bottomRow.addView(paymentButton, margins(dp(76), dp(44), dp(3), 0, dp(3), 0));
+        bottomRow.addView(runButton, margins(dp(96), dp(44), dp(3), 0, 0, 0));
         header.addView(bottomRow, margins(-1, dp(48), 0, dp(3), 0, 0));
         refreshSpeedButtons();
+        refreshPaymentButton();
         applyHeaderMode();
     }
 
@@ -611,6 +629,8 @@ public class MainActivity extends Activity {
         }
         running = true;
         pendingStart = true;
+        paymentPageActive = false;
+        lastPaymentTapMs = 0L;
         resetVisualStats();
         lastVisualMs = System.currentTimeMillis();
         if (statusText != null) statusText.setText("Loading Buy Page");
@@ -633,6 +653,8 @@ public class MainActivity extends Activity {
         pendingHit = null;
         pendingHitMs = 0L;
         nextVisualDelayMs = 0L;
+        lastPaymentTapMs = 0L;
+        paymentPageActive = false;
         if (statusText != null) statusText.setText("Running");
         if (minimizeButton != null) minimizeButton.setVisibility(View.VISIBLE);
         applyHeaderMode();
@@ -650,6 +672,8 @@ public class MainActivity extends Activity {
         pendingHit = null;
         pendingHitMs = 0L;
         nextVisualDelayMs = 0L;
+        lastPaymentTapMs = 0L;
+        paymentPageActive = false;
         handler.removeCallbacks(visualLoop);
         handler.removeCallbacks(tabCycleLoop);
         setHeaderMinimized(false);
@@ -796,7 +820,9 @@ public class MainActivity extends Activity {
         lastProfitPct = 0d;
         tabIndex = 0;
         lastTabTapMs = 0L;
+        lastPaymentTapMs = 0L;
         visualPauseUntil = 0L;
+        paymentPageActive = false;
         updateVisualStats("Running");
     }
 
@@ -807,7 +833,7 @@ public class MainActivity extends Activity {
 
     private void scheduleTabCycle(long delayMs) {
         handler.removeCallbacks(tabCycleLoop);
-        if (active && running) handler.postDelayed(tabCycleLoop, Math.max(0L, delayMs));
+        if (active && running && !paymentPageActive) handler.postDelayed(tabCycleLoop, Math.max(0L, delayMs));
     }
 
     private void runVisualScan() {
@@ -870,23 +896,20 @@ public class MainActivity extends Activity {
         scanCount++;
         String all = normalize(result.getText());
         boolean loadingScreen = isLoadingScreen(all);
+        List<OcrItem> items = collectOcrItems(result);
         if (all.contains("select method payment") || all.contains("please select payment account")) {
-            running = false;
+            paymentPageActive = true;
             pendingStart = false;
             pendingHit = null;
             pendingHitMs = 0L;
-            handler.removeCallbacks(visualLoop);
             handler.removeCallbacks(tabCycleLoop);
-            setHeaderMinimized(false);
-            if (minimizeButton != null) minimizeButton.setVisibility(View.GONE);
-            if (runButton != null) {
-                runButton.setText("START");
-                runButton.setBackground(bg("#0AF08A", "#0AF08A", dp(8)));
-            }
-            if (statusText != null) statusText.setText("Payment Found");
-            updateVisualStats("Payment Found");
-            toast("Payment page detected");
+            handlePaymentPage(items, width, height, scale);
             return;
+        }
+        if (paymentPageActive) {
+            paymentPageActive = false;
+            lastPaymentTapMs = 0L;
+            scheduleTabCycle(35L);
         }
         if (isSiteWarning(all)) {
             pendingHit = null;
@@ -896,7 +919,6 @@ public class MainActivity extends Activity {
             return;
         }
 
-        List<OcrItem> items = collectOcrItems(result);
         int min = parse(minInput, 100);
         int max = parse(maxInput, 10000);
         List<AmountHit> amounts = findAmounts(items, width, height, min, max);
@@ -951,6 +973,89 @@ public class MainActivity extends Activity {
         String clean = text.replace('\n', ' ').replaceAll("\\s+", " ").trim();
         if (clean.length() == 0) return;
         items.add(new OcrItem(clean, box));
+    }
+
+    private void handlePaymentPage(List<OcrItem> items, int width, int height, float scale) {
+        lastAmountCount = 0;
+        lastTargetCount = 0;
+        PaymentTarget target = findPaymentTarget(items, width, height);
+        if (target == null) {
+            nextVisualDelayMs = 140L;
+            updateVisualStats("Payment Wait " + paymentChoiceLabel());
+            return;
+        }
+        lastTargetCount = 1;
+        long now = SystemClock.uptimeMillis();
+        if (now - lastPaymentTapMs < PAYMENT_TAP_GAP_MS || scale <= 0f) {
+            nextVisualDelayMs = 120L;
+            updateVisualStats("Payment Ready " + paymentChoiceLabel());
+            return;
+        }
+        lastPaymentTapMs = now;
+        tapWebPoint(target.x / scale, target.y / scale);
+        nextVisualDelayMs = 180L;
+        updateVisualStats("Pay " + paymentChoiceLabel());
+    }
+
+    private PaymentTarget findPaymentTarget(List<OcrItem> items, int width, int height) {
+        String choice = normalizePaymentChoice(paymentChoice);
+        PaymentTarget best = null;
+        int bestY = Integer.MAX_VALUE;
+        for (OcrItem item : items) {
+            if (!isPaymentRowItem(item, width, height)) continue;
+            String text = normalize(item.text);
+            boolean matches = "AUTO".equals(choice) ? looksLikePaymentOption(text) : matchesPaymentChoice(text, choice);
+            if (!matches) continue;
+            int y = item.box.centerY();
+            if (y < bestY) {
+                bestY = y;
+                best = new PaymentTarget(Math.round(width * 0.52f), y);
+            }
+        }
+        return best;
+    }
+
+    private boolean isPaymentRowItem(OcrItem item, int width, int height) {
+        int y = item.box.centerY();
+        if (y < height * 0.15f || y > height * 0.97f) return false;
+        String text = normalize(item.text);
+        if (text.length() == 0) return false;
+        if (text.contains("select method")
+                || text.contains("please select")
+                || text.contains("payment account")
+                || text.contains("selected platform")
+                || text.contains("otherwise")
+                || text.contains("will fail")
+                || text.contains("100%")
+                || text.contains("use another account")) {
+            return false;
+        }
+        return item.box.centerX() > width * 0.05f && item.box.centerX() < width * 0.96f;
+    }
+
+    private boolean looksLikePaymentOption(String text) {
+        return text.contains("@")
+                || text.matches(".*[0-9]{6,}.*")
+                || matchesPaymentChoice(text, "PHONEPE")
+                || matchesPaymentChoice(text, "SUPER")
+                || matchesPaymentChoice(text, "AIRTEL")
+                || matchesPaymentChoice(text, "FREECHG");
+    }
+
+    private boolean matchesPaymentChoice(String text, String choice) {
+        if ("PHONEPE".equals(choice)) {
+            return text.contains("phonepe") || text.contains("phone pe") || text.contains("@ibl");
+        }
+        if ("SUPER".equals(choice)) {
+            return text.contains("super") || text.contains("money") || text.contains("superyes");
+        }
+        if ("AIRTEL".equals(choice)) {
+            return text.contains("airtel");
+        }
+        if ("FREECHG".equals(choice)) {
+            return text.contains("freecharge") || text.contains("free charge") || text.contains("freechg") || text.contains("freech");
+        }
+        return false;
     }
 
     private String rowTextFor(OcrItem anchor, List<OcrItem> items, int width, int height) {
@@ -1204,6 +1309,7 @@ public class MainActivity extends Activity {
     }
 
     private void switchOrderTabFromTimer() {
+        if (paymentPageActive) return;
         if (webView == null || !String.valueOf(webView.getUrl()).contains("/#/buy/arb")) return;
         if (System.currentTimeMillis() < visualPauseUntil) return;
         if (SystemClock.uptimeMillis() - lastNativeClickMs < 260L) return;
@@ -1299,6 +1405,37 @@ public class MainActivity extends Activity {
         return 200;
     }
 
+    private void cyclePaymentChoice() {
+        int current = 0;
+        String normalized = normalizePaymentChoice(paymentChoice);
+        for (int i = 0; i < PAYMENT_CHOICES.length; i++) {
+            if (PAYMENT_CHOICES[i].equals(normalized)) {
+                current = i;
+                break;
+            }
+        }
+        paymentChoice = PAYMENT_CHOICES[(current + 1) % PAYMENT_CHOICES.length];
+        if (prefs != null) prefs.edit().putString("payment_choice", paymentChoice).apply();
+        refreshPaymentButton();
+        toast("Payment " + paymentChoiceLabel());
+    }
+
+    private String normalizePaymentChoice(String raw) {
+        String clean = raw == null ? "" : raw.replaceAll("[^A-Za-z]", "").toUpperCase(Locale.US);
+        if (clean.equals("PHONE") || clean.equals("PHONEPE")) return "PHONEPE";
+        if (clean.equals("SUPERMONEY") || clean.equals("SUPER")) return "SUPER";
+        if (clean.equals("FREE") || clean.equals("FREECHARGE") || clean.equals("FREECHG")) return "FREECHG";
+        if (clean.equals("AIRTEL")) return "AIRTEL";
+        return "AUTO";
+    }
+
+    private String paymentChoiceLabel() {
+        String normalized = normalizePaymentChoice(paymentChoice);
+        if ("PHONEPE".equals(normalized)) return "PHONE";
+        if ("FREECHG".equals(normalized)) return "FREE";
+        return normalized;
+    }
+
     private long scanDelayMs() {
         return normalizeSpeed(scanSpeedMs);
     }
@@ -1318,17 +1455,26 @@ public class MainActivity extends Activity {
     }
 
     private void refreshSpeedButtons() {
-        if (speedText != null) speedText.setText("Visual OCR " + scanSpeedMs + "ms");
+        if (speedText != null) speedText.setText("OCR " + scanSpeedMs + "ms  Pay " + paymentChoiceLabel());
         styleSpeedButton(speed50Button, scanSpeedMs == 50);
         styleSpeedButton(speed100Button, scanSpeedMs == 100);
         styleSpeedButton(speed150Button, scanSpeedMs == 150);
         styleSpeedButton(speed200Button, scanSpeedMs == 200);
+        refreshPaymentButton();
     }
 
     private void styleSpeedButton(Button button, boolean selected) {
         if (button == null) return;
         button.setTextColor(color(selected ? "#03110A" : "#D8F4E5"));
         button.setBackground(bg(selected ? "#0AF08A" : "#0B1210", selected ? "#0AF08A" : "#244033", dp(999)));
+    }
+
+    private void refreshPaymentButton() {
+        if (paymentButton == null) return;
+        paymentButton.setText("P " + paymentChoiceLabel());
+        paymentButton.setTextColor(color("#FFE08A"));
+        paymentButton.setBackground(bg("#201709", "#B9973B", dp(999)));
+        if (speedText != null) speedText.setText("OCR " + scanSpeedMs + "ms  Pay " + paymentChoiceLabel());
     }
 
     private void setHeaderMinimized(boolean minimized) {
@@ -1490,6 +1636,16 @@ public class MainActivity extends Activity {
 
         int centerY() {
             return box.centerY();
+        }
+    }
+
+    private static class PaymentTarget {
+        final int x;
+        final int y;
+
+        PaymentTarget(int x, int y) {
+            this.x = x;
+            this.y = y;
         }
     }
 
