@@ -36,6 +36,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.PopupMenu;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -47,6 +48,7 @@ import com.google.mlkit.vision.text.TextRecognition;
 import com.google.mlkit.vision.text.TextRecognizer;
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -109,6 +111,7 @@ public class MainActivity extends Activity {
     private int planAmount = 50;
     private long expiryMs = 0L;
     private long lastVisualMs = 0L;
+    private long lastDomMs = 0L;
     private long lastNativeClickMs = 0L;
     private long lastTabTapMs = 0L;
     private long visualPauseUntil = 0L;
@@ -127,6 +130,7 @@ public class MainActivity extends Activity {
     private long pendingHitMs = 0L;
     private long lastPaymentTapMs = 0L;
     private AmountHit pendingHit;
+    private boolean domBusy = false;
     private boolean visualBusy = false;
     private boolean headerMinimized = false;
     private boolean active = false;
@@ -137,6 +141,7 @@ public class MainActivity extends Activity {
 
     private static final int HEADER_HEIGHT_DP = 216;
     private static final int HEADER_MINIMIZED_HEIGHT_DP = 58;
+    private static final int DOM_SCAN_MS = 100;
     private static final int[] SPEED_OPTIONS_MS = new int[]{50, 100, 150, 200};
     private static final String[] PAYMENT_CHOICES = new String[]{"AUTO", "PHONEPE", "SUPER", "AIRTEL", "FREECHG"};
     private static final String[] ORDER_TABS = new String[]{"default", "large"};
@@ -166,6 +171,14 @@ public class MainActivity extends Activity {
         }
     };
 
+    private final Runnable domLoop = new Runnable() {
+        @Override
+        public void run() {
+            if (!active || !running) return;
+            runDomScan();
+        }
+    };
+
     private final Runnable tabCycleLoop = new Runnable() {
         @Override
         public void run() {
@@ -188,9 +201,10 @@ public class MainActivity extends Activity {
                     pendingStart = true;
                     if (statusText != null) statusText.setText("Opening Buy");
                     webView.loadUrl(BUY_URL);
-                } else if (lastVisualMs > 0 && now - lastVisualMs > 11000L) {
+                } else if (Math.max(lastVisualMs, lastDomMs) > 0 && now - Math.max(lastVisualMs, lastDomMs) > 11000L) {
                     pendingStart = true;
                     lastVisualMs = now;
+                    lastDomMs = now;
                     if (statusText != null) statusText.setText("Web Recovery");
                     if (webView != null) {
                         webView.stopLoading();
@@ -225,7 +239,8 @@ public class MainActivity extends Activity {
         deviceId = "android-" + Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
         savedUuid = prefs.getString("uuid", "");
         expiryMs = prefs.getLong("expiry_ms", 0L);
-        scanSpeedMs = normalizeSpeed(prefs.getInt("scan_speed_ms", 50));
+        scanSpeedMs = DOM_SCAN_MS;
+        prefs.edit().putInt("scan_speed_ms", DOM_SCAN_MS).apply();
         paymentChoice = normalizePaymentChoice(prefs.getString("payment_choice", "AUTO"));
         textRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
         buildUi();
@@ -326,7 +341,8 @@ public class MainActivity extends Activity {
                 webError.setVisibility(View.GONE);
                 if (running) {
                     if (statusText != null) statusText.setText("Running");
-                    scheduleVisualScan(20L);
+                    scheduleDomScan(20L);
+                    scheduleVisualScan(220L);
                     scheduleTabCycle(35L);
                 }
             }
@@ -338,7 +354,8 @@ public class MainActivity extends Activity {
                 if (active && pendingStart) {
                     handler.postDelayed(() -> startBotEngine(false), 180);
                 } else if (active && running) {
-                    scheduleVisualScan(20L);
+                    scheduleDomScan(20L);
+                    scheduleVisualScan(220L);
                     scheduleTabCycle(35L);
                 }
             }
@@ -465,7 +482,7 @@ public class MainActivity extends Activity {
         header.addView(amountRow, margins(-1, dp(52), 0, dp(6), 0, 0));
 
         speedRow = row();
-        TextView speedLabel = label("SPEED", 10, "#8AE6AE", true);
+        TextView speedLabel = label("DOM", 10, "#8AE6AE", true);
         speedLabel.setGravity(Gravity.CENTER_VERTICAL);
         speedRow.addView(speedLabel, margins(dp(52), dp(32), dp(2), 0, dp(4), 0));
         speed50Button = speedButton("50", 50);
@@ -492,10 +509,10 @@ public class MainActivity extends Activity {
         buyPage.setTextColor(color("#FFE08A"));
         buyPage.setBackground(bg("#201709", "#B9973B", dp(999)));
         buyPage.setOnClickListener(v -> webView.loadUrl(BUY_URL));
-        paymentButton = smallButton("P " + paymentChoiceLabel());
+        paymentButton = smallButton("PAY " + paymentChoiceLabel());
         paymentButton.setTextColor(color("#FFE08A"));
         paymentButton.setBackground(bg("#201709", "#B9973B", dp(999)));
-        paymentButton.setOnClickListener(v -> cyclePaymentChoice());
+        paymentButton.setOnClickListener(v -> showPaymentMenu());
         runButton = button("START", "#0AF08A", "#03110A", 15);
         runButton.setOnClickListener(v -> {
             if (running) stopBot();
@@ -503,7 +520,7 @@ public class MainActivity extends Activity {
         });
         bottomRow.addView(statBox, weight());
         bottomRow.addView(buyPage, margins(dp(58), dp(44), dp(4), 0, dp(3), 0));
-        bottomRow.addView(paymentButton, margins(dp(76), dp(44), dp(3), 0, dp(3), 0));
+        bottomRow.addView(paymentButton, margins(dp(78), dp(44), dp(3), 0, dp(3), 0));
         bottomRow.addView(runButton, margins(dp(96), dp(44), dp(3), 0, 0, 0));
         header.addView(bottomRow, margins(-1, dp(48), 0, dp(3), 0, 0));
         refreshSpeedButtons();
@@ -631,6 +648,7 @@ public class MainActivity extends Activity {
         pendingStart = true;
         paymentPageActive = false;
         lastPaymentTapMs = 0L;
+        lastDomMs = 0L;
         resetVisualStats();
         lastVisualMs = System.currentTimeMillis();
         if (statusText != null) statusText.setText("Loading Buy Page");
@@ -648,7 +666,9 @@ public class MainActivity extends Activity {
         if (!active || !running) return;
         pendingStart = false;
         lastVisualMs = System.currentTimeMillis();
+        lastDomMs = System.currentTimeMillis();
         visualPauseUntil = 0L;
+        domBusy = false;
         visualBusy = false;
         pendingHit = null;
         pendingHitMs = 0L;
@@ -660,7 +680,8 @@ public class MainActivity extends Activity {
         applyHeaderMode();
         runButton.setText("STOP");
         runButton.setBackground(bg("#EF4444", "#EF4444", dp(8)));
-        scheduleVisualScan(90L);
+        scheduleDomScan(30L);
+        scheduleVisualScan(260L);
         scheduleTabCycle(120L);
         if (announce) toast("Bot started");
     }
@@ -668,6 +689,7 @@ public class MainActivity extends Activity {
     private void stopBot() {
         running = false;
         pendingStart = false;
+        domBusy = false;
         visualBusy = false;
         pendingHit = null;
         pendingHitMs = 0L;
@@ -675,6 +697,7 @@ public class MainActivity extends Activity {
         lastPaymentTapMs = 0L;
         paymentPageActive = false;
         handler.removeCallbacks(visualLoop);
+        handler.removeCallbacks(domLoop);
         handler.removeCallbacks(tabCycleLoop);
         setHeaderMinimized(false);
         if (minimizeButton != null) minimizeButton.setVisibility(View.GONE);
@@ -818,6 +841,7 @@ public class MainActivity extends Activity {
         lastPrice = 0;
         lastReward = 0d;
         lastProfitPct = 0d;
+        lastDomMs = 0L;
         tabIndex = 0;
         lastTabTapMs = 0L;
         lastPaymentTapMs = 0L;
@@ -831,9 +855,145 @@ public class MainActivity extends Activity {
         if (active && running) handler.postDelayed(visualLoop, Math.max(20L, delayMs));
     }
 
+    private void scheduleDomScan(long delayMs) {
+        handler.removeCallbacks(domLoop);
+        if (active && running) handler.postDelayed(domLoop, Math.max(20L, delayMs));
+    }
+
     private void scheduleTabCycle(long delayMs) {
         handler.removeCallbacks(tabCycleLoop);
         if (active && running && !paymentPageActive) handler.postDelayed(tabCycleLoop, Math.max(0L, delayMs));
+    }
+
+    private long visualFallbackDelayMs() {
+        return paymentPageActive ? 180L : 520L;
+    }
+
+    private void runDomScan() {
+        if (!active || !running || webView == null) return;
+        if (domBusy) {
+            scheduleDomScan(DOM_SCAN_MS);
+            return;
+        }
+        long now = System.currentTimeMillis();
+        lastDomMs = now;
+        if (expiryMs > 0 && now >= expiryMs) {
+            expireToPayment("Your plan expired while using the bot.");
+            return;
+        }
+        if (now < visualPauseUntil) {
+            updateVisualStats("Cooling");
+            scheduleDomScan(DOM_SCAN_MS);
+            return;
+        }
+        int min = parse(minInput, 100);
+        int max = parse(maxInput, 10000);
+        domBusy = true;
+        try {
+            webView.evaluateJavascript(buildDomScript(min, max, paymentChoice), value -> {
+                domBusy = false;
+                handleDomResult(value);
+                if (active && running) scheduleDomScan(DOM_SCAN_MS);
+            });
+        } catch (Exception ignored) {
+            domBusy = false;
+            scheduleDomScan(DOM_SCAN_MS);
+        }
+    }
+
+    private String buildDomScript(int min, int max, String payment) {
+        String pay = JSONObject.quote(normalizePaymentChoice(payment));
+        return "(function(){"
+                + "var cfg={min:" + min + ",max:" + max + ",pay:" + pay + ",minProfit:" + MIN_PROFIT_PERCENT + ",now:Date.now()};"
+                + "var out={mode:'dom',screen:'',clicked:false,fit:false,amount:0,reward:0,profit:0,amounts:0,targets:0,tab:false,pay:false,warning:false};"
+                + "try{var d=document,b=d.body,w=window;if(!b)return JSON.stringify(out);"
+                + "var st=w.__arbSmartDom||(w.__arbSmartDom={lastBuy:0,lastPay:0,lastTab:0,tab:0});"
+                + "var page=String(b.innerText||'').toLowerCase().replace(/\\s+/g,' ');"
+                + "if(/customer service|contact support|too frequent|frequent operation|risk|abnormal/.test(page)){out.warning=true;return JSON.stringify(out);}"
+                + "function n(v){return String(v||'').toLowerCase().replace(/\\s+/g,' ').trim();}"
+                + "function all(s){return Array.prototype.slice.call(d.querySelectorAll(s));}"
+                + "function vis(e){if(!e||!e.getBoundingClientRect)return false;var r=e.getBoundingClientRect(),cs=w.getComputedStyle(e);return cs.display!=='none'&&cs.visibility!=='hidden'&&Number(cs.opacity)!==0&&r.width>8&&r.height>8&&r.bottom>0&&r.right>0&&r.top<(w.innerHeight||9999)&&r.left<(w.innerWidth||9999);}"
+                + "function fire(e,t,x,y){try{e.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,view:w,clientX:x,clientY:y}));}catch(_){}}"
+                + "function tap(e){if(!vis(e))return false;try{e.scrollIntoView({block:'center',inline:'center'});}catch(_){}var r=e.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2;try{if(w.PointerEvent){e.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,pointerId:1,pointerType:'touch',clientX:x,clientY:y}));e.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,cancelable:true,pointerId:1,pointerType:'touch',clientX:x,clientY:y}));}}catch(_){}fire(e,'mousedown',x,y);fire(e,'mouseup',x,y);fire(e,'click',x,y);try{e.click();}catch(_){}return true;}"
+                + "function cleanMoney(t){return String(t||'').replace(new RegExp(String.fromCharCode(8377),'g'),'rs ');}"
+                + "function money(t){t=cleanMoney(t);var m=t.match(/(?:rs\\.?|inr)\\s*([0-9]{2,7})/i);if(m)return parseInt(m[1].replace(/[^0-9]/g,''),10)||0;var lines=t.split(/\\n/);for(var i=0;i<lines.length;i++){var line=lines[i];if(/reward|limit|tips|kyc|1\\s*inr|1\\s*u/i.test(line))continue;var a=line.match(/^\\s*[^0-9]{0,4}([0-9]{2,7})\\s*(?:upi|bank|usdt|arb)?\\b/i);if(a)return parseInt(a[1],10)||0;}return 0;}"
+                + "function reward(t){var m=cleanMoney(t).match(/reward\\s*\\+?\\s*(?:rs\\.?|inr)?\\s*([0-9]{1,7}(?:\\.[0-9]+)?)/i);return m?parseFloat(m[1])||0:0;}"
+                + "function buyWords(t){var m=n(t).match(/\\bbuy\\b/g);return m?m.length:0;}"
+                + "function rowFor(btn){var p=btn;for(var i=0;p&&i<8;i++,p=p.parentElement){if(!vis(p))continue;var r=p.getBoundingClientRect(),t=p.innerText||'';if(r.height>=28&&r.height<=190&&r.width>=(w.innerWidth||r.width)*0.45&&money(t)>0&&buyWords(t)<=2)return p;}return btn.parentElement||btn;}"
+                + "function buyButtons(){var nodes=all('button,[role=button],.van-button,.adm-button,a,div,span'),arr=[];for(var i=0;i<nodes.length;i++){var e=nodes[i];if(!vis(e))continue;var r=e.getBoundingClientRect();if(r.left<(w.innerWidth||r.right)*0.52)continue;var t=n(e.innerText||e.textContent||e.getAttribute('aria-label')||'');if(t.length>20)continue;if(t==='buy'||/\\bbuy\\b/.test(t))arr.push(e);}arr.sort(function(a,b){return a.getBoundingClientRect().top-b.getBoundingClientRect().top;});return arr;}"
+                + "function pmatch(t,c){if(c==='PHONEPE')return /phone\\s*pe|phonepe|@ibl/.test(t);if(c==='SUPER')return /super|money|superyes/.test(t);if(c==='AIRTEL')return /airtel/.test(t);if(c==='FREECHG')return /free\\s*charge|freecharge|freechg|freech/.test(t);return false;}"
+                + "function payTarget(){var nodes=all('button,[role=button],.van-button,.adm-button,a,div'),best=null,bestY=999999;for(var i=0;i<nodes.length;i++){var e=nodes[i];if(!vis(e))continue;var r=e.getBoundingClientRect(),t=n(e.innerText||e.textContent||e.getAttribute('aria-label')||'');if(r.top<(w.innerHeight||9999)*0.13||r.height<28||r.height>140||r.width<(w.innerWidth||r.width)*0.45)continue;if(!t||/select method|please select|payment account|selected platform|otherwise|will fail|100%|use another account/.test(t))continue;var ok=cfg.pay==='AUTO'?(/[0-9]{6,}|@|phone\\s*pe|phonepe|super|money|airtel|free\\s*charge|freecharge/.test(t)):pmatch(t,cfg.pay);if(ok&&r.top<bestY){best=e;bestY=r.top;}}return best;}"
+                + "if(page.indexOf('select method payment')>-1||page.indexOf('please select payment account')>-1){out.screen='payment';var pe=payTarget();if(pe&&cfg.now-(st.lastPay||0)>850){st.lastPay=cfg.now;out.clicked=tap(pe);out.pay=out.clicked;}return JSON.stringify(out);}"
+                + "var buttons=buyButtons();out.targets=buttons.length;"
+                + "for(var i=0;i<buttons.length;i++){var btn=buttons[i],row=rowFor(btn),txt=row.innerText||'',amt=money(txt);if(!amt)continue;out.amounts++;var inRange=cfg.min===cfg.max?amt===cfg.min:amt>=cfg.min&&amt<=cfg.max;if(!inRange)continue;var rew=reward(txt),profit=amt>0&&rew>0?(rew/amt)*100:0;if(rew>0&&profit+0.0001<cfg.minProfit)continue;if(money(row.innerText||'')!==amt||!vis(btn))continue;out.fit=true;out.amount=amt;out.reward=rew;out.profit=profit;if(cfg.now-(st.lastBuy||0)>180){st.lastBuy=cfg.now;out.clicked=tap(btn);out.screen='buy';}return JSON.stringify(out);}"
+                + "function tab(label){var nodes=all('button,[role=button],.van-tab,div,span,a');for(var i=0;i<nodes.length;i++){var e=nodes[i];if(!vis(e))continue;var r=e.getBoundingClientRect(),t=n(e.innerText||e.textContent||'');if(t===label.toLowerCase()&&r.top<(w.innerHeight||9999)*0.36&&r.left<(w.innerWidth||9999)*0.65){return tap(e);}}return false;}"
+                + "if(cfg.now-(st.lastTab||0)>1000){var label=st.tab%2===0?'Large':'Default';if(tab(label)){st.tab++;st.lastTab=cfg.now;out.tab=true;}}"
+                + "}catch(e){out.error=String(e&&e.message||e);}"
+                + "return JSON.stringify(out);"
+                + "})()";
+    }
+
+    private void handleDomResult(String encoded) {
+        lastDomMs = System.currentTimeMillis();
+        scanCount++;
+        try {
+            String raw = decodeJsResult(encoded);
+            if (raw.length() == 0) return;
+            JSONObject json = new JSONObject(raw);
+            if (json.optBoolean("warning", false)) {
+                pendingHit = null;
+                pendingHitMs = 0L;
+                visualPauseUntil = System.currentTimeMillis() + SITE_WARNING_PAUSE_MS;
+                updateVisualStats("Cooling");
+                return;
+            }
+            String screen = json.optString("screen", "");
+            if ("payment".equals(screen)) {
+                paymentPageActive = true;
+                pendingStart = false;
+                handler.removeCallbacks(tabCycleLoop);
+            } else if (paymentPageActive) {
+                paymentPageActive = false;
+                lastPaymentTapMs = 0L;
+                scheduleTabCycle(35L);
+            }
+            lastAmountCount = json.optInt("amounts", lastAmountCount);
+            lastTargetCount = json.optInt("targets", lastTargetCount);
+            int amount = json.optInt("amount", 0);
+            if (amount > 0) {
+                lastPrice = amount;
+                lastReward = json.optDouble("reward", 0d);
+                lastProfitPct = json.optDouble("profit", 0d);
+            }
+            if (json.optBoolean("fit", false)) fitCount++;
+            if (json.optBoolean("clicked", false)) {
+                if (json.optBoolean("pay", false)) {
+                    lastPaymentTapMs = SystemClock.uptimeMillis();
+                    updateVisualStats("Pay " + paymentChoiceLabel());
+                } else {
+                    lastNativeClickMs = SystemClock.uptimeMillis();
+                    buyCount++;
+                    updateVisualStats(amount > 0 ? "DOM Buy " + amount : "DOM Buy");
+                }
+                return;
+            }
+            if (json.optBoolean("tab", false)) {
+                updateVisualStats("DOM Refresh");
+                return;
+            }
+            updateVisualStats(paymentPageActive ? "Payment " + paymentChoiceLabel() : "DOM Scan");
+        } catch (Exception ignored) {
+            updateVisualStats("DOM Recovery");
+        }
+    }
+
+    private String decodeJsResult(String encoded) throws Exception {
+        if (encoded == null || "null".equals(encoded)) return "";
+        String value = encoded.trim();
+        if (value.startsWith("\"")) {
+            return new JSONArray("[" + value + "]").getString(0);
+        }
+        return value;
     }
 
     private void runVisualScan() {
@@ -883,7 +1043,7 @@ public class MainActivity extends Activity {
                     bitmap.recycle();
                     visualBusy = false;
                     if (active && running) {
-                        long delay = nextVisualDelayMs > 0L ? nextVisualDelayMs : scanDelayMs();
+                        long delay = nextVisualDelayMs > 0L ? nextVisualDelayMs : visualFallbackDelayMs();
                         nextVisualDelayMs = 0L;
                         scheduleVisualScan(delay);
                     }
@@ -1391,11 +1551,11 @@ public class MainActivity extends Activity {
     }
 
     private void selectSpeed(int speedMs, boolean announce) {
-        scanSpeedMs = normalizeSpeed(speedMs);
-        if (prefs != null) prefs.edit().putInt("scan_speed_ms", scanSpeedMs).apply();
+        scanSpeedMs = DOM_SCAN_MS;
+        if (prefs != null) prefs.edit().putInt("scan_speed_ms", DOM_SCAN_MS).apply();
         refreshSpeedButtons();
-        if (running) scheduleVisualScan(20L);
-        if (announce) toast("Speed " + scanSpeedMs + "ms");
+        if (running) scheduleDomScan(20L);
+        if (announce) toast("DOM speed fixed 100ms");
     }
 
     private int normalizeSpeed(int speedMs) {
@@ -1420,6 +1580,22 @@ public class MainActivity extends Activity {
         toast("Payment " + paymentChoiceLabel());
     }
 
+    private void showPaymentMenu() {
+        if (paymentButton == null) return;
+        PopupMenu menu = new PopupMenu(this, paymentButton);
+        for (String choice : PAYMENT_CHOICES) {
+            menu.getMenu().add(choiceLabel(choice));
+        }
+        menu.setOnMenuItemClickListener(item -> {
+            paymentChoice = normalizePaymentChoice(String.valueOf(item.getTitle()));
+            if (prefs != null) prefs.edit().putString("payment_choice", paymentChoice).apply();
+            refreshPaymentButton();
+            toast("Payment " + paymentChoiceLabel());
+            return true;
+        });
+        menu.show();
+    }
+
     private String normalizePaymentChoice(String raw) {
         String clean = raw == null ? "" : raw.replaceAll("[^A-Za-z]", "").toUpperCase(Locale.US);
         if (clean.equals("PHONE") || clean.equals("PHONEPE")) return "PHONEPE";
@@ -1431,13 +1607,18 @@ public class MainActivity extends Activity {
 
     private String paymentChoiceLabel() {
         String normalized = normalizePaymentChoice(paymentChoice);
+        return choiceLabel(normalized);
+    }
+
+    private String choiceLabel(String choice) {
+        String normalized = normalizePaymentChoice(choice);
         if ("PHONEPE".equals(normalized)) return "PHONE";
         if ("FREECHG".equals(normalized)) return "FREE";
         return normalized;
     }
 
     private long scanDelayMs() {
-        return normalizeSpeed(scanSpeedMs);
+        return DOM_SCAN_MS;
     }
 
     private long verifyDelayMs() {
@@ -1455,11 +1636,12 @@ public class MainActivity extends Activity {
     }
 
     private void refreshSpeedButtons() {
-        if (speedText != null) speedText.setText("OCR " + scanSpeedMs + "ms  Pay " + paymentChoiceLabel());
-        styleSpeedButton(speed50Button, scanSpeedMs == 50);
-        styleSpeedButton(speed100Button, scanSpeedMs == 100);
-        styleSpeedButton(speed150Button, scanSpeedMs == 150);
-        styleSpeedButton(speed200Button, scanSpeedMs == 200);
+        scanSpeedMs = DOM_SCAN_MS;
+        if (speedText != null) speedText.setText("DOM " + DOM_SCAN_MS + "ms  Pay " + paymentChoiceLabel());
+        styleSpeedButton(speed50Button, false);
+        styleSpeedButton(speed100Button, true);
+        styleSpeedButton(speed150Button, false);
+        styleSpeedButton(speed200Button, false);
         refreshPaymentButton();
     }
 
@@ -1471,10 +1653,10 @@ public class MainActivity extends Activity {
 
     private void refreshPaymentButton() {
         if (paymentButton == null) return;
-        paymentButton.setText("P " + paymentChoiceLabel());
+        paymentButton.setText("PAY " + paymentChoiceLabel());
         paymentButton.setTextColor(color("#FFE08A"));
         paymentButton.setBackground(bg("#201709", "#B9973B", dp(999)));
-        if (speedText != null) speedText.setText("OCR " + scanSpeedMs + "ms  Pay " + paymentChoiceLabel());
+        if (speedText != null) speedText.setText("DOM " + DOM_SCAN_MS + "ms  Pay " + paymentChoiceLabel());
     }
 
     private void setHeaderMinimized(boolean minimized) {
