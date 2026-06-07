@@ -114,6 +114,8 @@ public class MainActivity extends Activity {
     private int scanCount = 0;
     private int fitCount = 0;
     private int buyCount = 0;
+    private int lastAmountCount = 0;
+    private int lastTargetCount = 0;
     private int lastPrice = 0;
     private double lastReward = 0d;
     private double lastProfitPct = 0d;
@@ -767,6 +769,8 @@ public class MainActivity extends Activity {
         scanCount = 0;
         fitCount = 0;
         buyCount = 0;
+        lastAmountCount = 0;
+        lastTargetCount = 0;
         lastPrice = 0;
         lastReward = 0d;
         lastProfitPct = 0d;
@@ -870,6 +874,8 @@ public class MainActivity extends Activity {
         int max = parse(maxInput, 10000);
         List<AmountHit> amounts = findAmounts(items, width, height, min, max);
         List<BuyTarget> buyTargets = findBuyTargets(items, visualBuyTargets, width, height);
+        lastAmountCount = amounts.size();
+        lastTargetCount = buyTargets.size();
         AmountHit hit = chooseBuyTarget(amounts, buyTargets, width, height);
         if (hit != null) {
             long now = SystemClock.uptimeMillis();
@@ -877,7 +883,7 @@ public class MainActivity extends Activity {
             lastPrice = hit.amount;
             lastReward = hit.reward;
             lastProfitPct = hit.profitPct;
-            if (matchesPendingHit(hit, width, height, now) && now - lastNativeClickMs >= buyTapGapMs()) {
+            if (shouldTapHit(hit, width, height, now)) {
                 lastNativeClickMs = now;
                 buyCount++;
                 pendingHit = null;
@@ -1070,6 +1076,8 @@ public class MainActivity extends Activity {
                     best = amount.copy();
                     best.buyX = buy.centerX();
                     best.buyY = buy.centerY();
+                    best.buyBox = new Rect(buy.box);
+                    best.visualBuy = buy.visual;
                 }
             }
         }
@@ -1077,7 +1085,23 @@ public class MainActivity extends Activity {
         AmountHit fallback = amounts.get(0);
         fallback.buyX = Math.round(width * FALLBACK_BUY_X);
         fallback.buyY = Math.min(height - 3, fallback.amountBox.centerY() + Math.round(height * FALLBACK_BUY_Y_OFFSET));
+        fallback.visualBuy = false;
         return fallback;
+    }
+
+    private boolean shouldTapHit(AmountHit hit, int width, int height, long now) {
+        if (now - lastNativeClickMs < buyTapGapMs()) return false;
+        if (hit.visualBuy && isStrongRowPair(hit, width, height)) return true;
+        return matchesPendingHit(hit, width, height, now);
+    }
+
+    private boolean isStrongRowPair(AmountHit hit, int width, int height) {
+        if (hit.buyX <= 0 || hit.buyY <= 0) return false;
+        int maxRowGap = Math.max(62, Math.round(height * 0.075f));
+        int rowGap = Math.abs(hit.buyY - hit.amountBox.centerY());
+        if (rowGap > maxRowGap) return false;
+        if (hit.buyX < width * 0.58f || hit.buyX <= hit.amountBox.centerX()) return false;
+        return hit.buyBox != null && hit.buyBox.width() >= Math.max(56, Math.round(width * 0.09f));
     }
 
     private boolean matchesPendingHit(AmountHit hit, int width, int height, long now) {
@@ -1161,15 +1185,30 @@ public class MainActivity extends Activity {
         if (webView == null) return;
         float safeX = Math.max(2f, Math.min(webView.getWidth() - 2f, x));
         float safeY = Math.max(2f, Math.min(webView.getHeight() - 2f, y));
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(() -> dispatchWebTap(safeX, safeY));
+        } else {
+            dispatchWebTap(safeX, safeY);
+        }
+    }
+
+    private void dispatchWebTap(float x, float y) {
+        if (webView == null) return;
+        float safeX = Math.max(3f, Math.min(webView.getWidth() - 3f, x));
+        float safeY = Math.max(3f, Math.min(webView.getHeight() - 3f, y));
         long downTime = SystemClock.uptimeMillis();
         MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, safeX, safeY, 0);
-        MotionEvent up = MotionEvent.obtain(downTime, downTime + 42L, MotionEvent.ACTION_UP, safeX, safeY, 0);
+        MotionEvent move = MotionEvent.obtain(downTime, downTime + 38L, MotionEvent.ACTION_MOVE, safeX + 0.35f, safeY + 0.35f, 0);
+        MotionEvent up = MotionEvent.obtain(downTime, downTime + 76L, MotionEvent.ACTION_UP, safeX, safeY, 0);
         down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        move.setSource(InputDevice.SOURCE_TOUCHSCREEN);
         up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        webView.requestFocus();
+        webView.requestFocusFromTouch();
         webView.dispatchTouchEvent(down);
+        webView.dispatchTouchEvent(move);
         webView.dispatchTouchEvent(up);
         down.recycle();
+        move.recycle();
         up.recycle();
     }
 
@@ -1183,7 +1222,7 @@ public class MainActivity extends Activity {
         String suffix = lastPrice > 0
                 ? "  Last " + lastPrice + " +" + trimDouble(lastReward) + " " + trimDouble(lastProfitPct) + "%"
                 : "";
-        statsText.setText("Scan " + scanCount + "  Fit " + fitCount + "  Buy " + buyCount + suffix);
+        statsText.setText("Scan " + scanCount + "  A " + lastAmountCount + "  T " + lastTargetCount + "  Fit " + fitCount + "  Buy " + buyCount + suffix);
     }
 
     private Button speedButton(String text, int speedMs) {
@@ -1407,6 +1446,8 @@ public class MainActivity extends Activity {
         double reward;
         double profitPct;
         String rowText = "";
+        Rect buyBox;
+        boolean visualBuy;
         int buyX;
         int buyY;
 
@@ -1420,6 +1461,8 @@ public class MainActivity extends Activity {
             clone.reward = reward;
             clone.profitPct = profitPct;
             clone.rowText = rowText;
+            clone.buyBox = buyBox == null ? null : new Rect(buyBox);
+            clone.visualBuy = visualBuy;
             clone.buyX = buyX;
             clone.buyY = buyY;
             return clone;
