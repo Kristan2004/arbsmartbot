@@ -25,6 +25,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -137,11 +138,13 @@ public class MainActivity extends Activity {
     private boolean running = false;
     private boolean pendingStart = false;
     private boolean paymentPageActive = false;
+    private boolean domAgentStarted = false;
     private TextRecognizer textRecognizer;
 
     private static final int HEADER_HEIGHT_DP = 216;
     private static final int HEADER_MINIMIZED_HEIGHT_DP = 58;
     private static final int DOM_SCAN_MS = 100;
+    private static final long DOM_CONFIG_MS = 450L;
     private static final int[] SPEED_OPTIONS_MS = new int[]{50, 100, 150, 200};
     private static final String[] PAYMENT_CHOICES = new String[]{"AUTO", "PHONEPE", "SUPER", "AIRTEL", "FREECHG"};
     private static final String[] ORDER_TABS = new String[]{"default", "large"};
@@ -316,6 +319,7 @@ public class MainActivity extends Activity {
 
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
+        webView.addJavascriptInterface(new BotBridge(), "ARBSmart");
         webView.setWebChromeClient(new WebChromeClient());
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         webView.setScrollBarStyle(View.SCROLLBARS_INSIDE_OVERLAY);
@@ -336,6 +340,7 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                domAgentStarted = false;
                 if (url != null && url.contains("/#/buy/arb")) paymentPageActive = false;
                 loader.setVisibility(running ? View.GONE : View.VISIBLE);
                 webError.setVisibility(View.GONE);
@@ -349,6 +354,7 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageFinished(WebView view, String url) {
+                domAgentStarted = false;
                 if (url != null && url.contains("/#/buy/arb")) paymentPageActive = false;
                 loader.setVisibility(View.GONE);
                 if (active && pendingStart) {
@@ -670,6 +676,7 @@ public class MainActivity extends Activity {
         visualPauseUntil = 0L;
         domBusy = false;
         visualBusy = false;
+        domAgentStarted = false;
         pendingHit = null;
         pendingHitMs = 0L;
         nextVisualDelayMs = 0L;
@@ -691,6 +698,13 @@ public class MainActivity extends Activity {
         pendingStart = false;
         domBusy = false;
         visualBusy = false;
+        if (webView != null) {
+            try {
+                webView.evaluateJavascript("(function(){try{if(window.__arbSmartAgent){window.__arbSmartAgent.configure({running:false});}}catch(_){ }return true;})()", null);
+            } catch (Exception ignored) {
+            }
+        }
+        domAgentStarted = false;
         pendingHit = null;
         pendingHitMs = 0L;
         nextVisualDelayMs = 0L;
@@ -890,10 +904,13 @@ public class MainActivity extends Activity {
         int max = parse(maxInput, 10000);
         domBusy = true;
         try {
-            webView.evaluateJavascript(buildDomScript(min, max, paymentChoice), value -> {
+            String script = domAgentStarted
+                    ? buildDomConfigScript(min, max, paymentChoice, true)
+                    : buildDomAgentScript(min, max, paymentChoice);
+            webView.evaluateJavascript(script, value -> {
                 domBusy = false;
                 handleDomResult(value);
-                if (active && running) scheduleDomScan(DOM_SCAN_MS);
+                if (active && running) scheduleDomScan(domAgentStarted ? DOM_CONFIG_MS : DOM_SCAN_MS);
             });
         } catch (Exception ignored) {
             domBusy = false;
@@ -901,15 +918,35 @@ public class MainActivity extends Activity {
         }
     }
 
-    private String buildDomScript(int min, int max, String payment) {
+    private String domConfigJson(int min, int max, String payment, boolean runningFlag) {
         String pay = JSONObject.quote(normalizePaymentChoice(payment));
+        return "{min:" + min
+                + ",max:" + max
+                + ",pay:" + pay
+                + ",minProfit:" + MIN_PROFIT_PERCENT
+                + ",scanMs:" + DOM_SCAN_MS
+                + ",cooldownMs:160"
+                + ",running:" + (runningFlag ? "true" : "false")
+                + "}";
+    }
+
+    private String buildDomConfigScript(int min, int max, String payment, boolean runningFlag) {
+        String cfg = domConfigJson(min, max, payment, runningFlag);
         return "(function(){"
-                + "var cfg={min:" + min + ",max:" + max + ",pay:" + pay + ",minProfit:" + MIN_PROFIT_PERCENT + ",now:Date.now()};"
-                + "var out={mode:'dom',screen:'',clicked:false,fit:false,amount:0,reward:0,profit:0,amounts:0,targets:0,tab:false,pay:false,warning:false};"
-                + "try{var d=document,b=d.body,w=window;if(!b)return JSON.stringify(out);"
-                + "var st=w.__arbSmartDom||(w.__arbSmartDom={lastBuy:0,lastPay:0,lastTab:0,tab:0});"
-                + "var page=String(b.innerText||'').toLowerCase().replace(/\\s+/g,' ');"
-                + "if(/customer service|contact support|too frequent|frequent operation|risk|abnormal/.test(page)){out.warning=true;return JSON.stringify(out);}"
+                + "try{var b=window.__arbSmartAgent;if(!b||b.version!==151)return JSON.stringify({mode:'agent',missing:true});"
+                + "b.configure(" + cfg + ");b.scan(true);return JSON.stringify({mode:'agent',ready:true});}"
+                + "catch(e){return JSON.stringify({mode:'agent',missing:true,error:String(e&&e.message||e)});}"
+                + "})()";
+    }
+
+    private String buildDomAgentScript(int min, int max, String payment) {
+        String cfg = domConfigJson(min, max, payment, true);
+        return "(function(){"
+                + "try{var w=window,d=document,b=d.body;if(!b)return JSON.stringify({mode:'agent',missing:true});"
+                + "var cfg=" + cfg + ";var old=w.__arbSmartAgent;if(old&&old.version===151){old.configure(cfg);old.scan(true);return JSON.stringify({mode:'agent',ready:true});}"
+                + "var bot={version:151,cfg:cfg,lastBuy:0,lastPay:0,lastTab:0,lastSend:0,scanLast:0,buyAttempts:0,tab:0,timer:null,observer:null};"
+                + "bot.configure=function(c){var next=this.cfg||{};c=c||{};for(var k in c){if(Object.prototype.hasOwnProperty.call(c,k))next[k]=c[k];}this.cfg=next;};"
+                + "bot.send=function(out,force){var now=Date.now();if(!force&&!out.clicked&&!out.warning&&!out.pay&&now-this.lastSend<160)return;this.lastSend=now;out.mode=out.mode||'dom';try{if(w.ARBSmart&&w.ARBSmart.postMessage){w.ARBSmart.postMessage(JSON.stringify(out));}else if(w.ReactNativeWebView&&w.ReactNativeWebView.postMessage){w.ReactNativeWebView.postMessage(JSON.stringify(out));}}catch(_){}};"
                 + "function n(v){return String(v||'').toLowerCase().replace(/\\s+/g,' ').trim();}"
                 + "function all(s){return Array.prototype.slice.call(d.querySelectorAll(s));}"
                 + "function vis(e){if(!e||!e.getBoundingClientRect)return false;var r=e.getBoundingClientRect(),cs=w.getComputedStyle(e);return cs.display!=='none'&&cs.visibility!=='hidden'&&Number(cs.opacity)!==0&&r.width>8&&r.height>8&&r.bottom>0&&r.right>0&&r.top<(w.innerHeight||9999)&&r.left<(w.innerWidth||9999);}"
@@ -922,14 +959,11 @@ public class MainActivity extends Activity {
                 + "function rowFor(btn){var p=btn;for(var i=0;p&&i<8;i++,p=p.parentElement){if(!vis(p))continue;var r=p.getBoundingClientRect(),t=p.innerText||'';if(r.height>=28&&r.height<=190&&r.width>=(w.innerWidth||r.width)*0.45&&money(t)>0&&buyWords(t)<=2)return p;}return btn.parentElement||btn;}"
                 + "function buyButtons(){var nodes=all('button,[role=button],.van-button,.adm-button,a,div,span'),arr=[];for(var i=0;i<nodes.length;i++){var e=nodes[i];if(!vis(e))continue;var r=e.getBoundingClientRect();if(r.left<(w.innerWidth||r.right)*0.52)continue;var t=n(e.innerText||e.textContent||e.getAttribute('aria-label')||'');if(t.length>20)continue;if(t==='buy'||/\\bbuy\\b/.test(t))arr.push(e);}arr.sort(function(a,b){return a.getBoundingClientRect().top-b.getBoundingClientRect().top;});return arr;}"
                 + "function pmatch(t,c){if(c==='PHONEPE')return /phone\\s*pe|phonepe|@ibl/.test(t);if(c==='SUPER')return /super|money|superyes/.test(t);if(c==='AIRTEL')return /airtel/.test(t);if(c==='FREECHG')return /free\\s*charge|freecharge|freechg|freech/.test(t);return false;}"
-                + "function payTarget(){var nodes=all('button,[role=button],.van-button,.adm-button,a,div'),best=null,bestY=999999;for(var i=0;i<nodes.length;i++){var e=nodes[i];if(!vis(e))continue;var r=e.getBoundingClientRect(),t=n(e.innerText||e.textContent||e.getAttribute('aria-label')||'');if(r.top<(w.innerHeight||9999)*0.13||r.height<28||r.height>140||r.width<(w.innerWidth||r.width)*0.45)continue;if(!t||/select method|please select|payment account|selected platform|otherwise|will fail|100%|use another account/.test(t))continue;var ok=cfg.pay==='AUTO'?(/[0-9]{6,}|@|phone\\s*pe|phonepe|super|money|airtel|free\\s*charge|freecharge/.test(t)):pmatch(t,cfg.pay);if(ok&&r.top<bestY){best=e;bestY=r.top;}}return best;}"
-                + "if(page.indexOf('select method payment')>-1||page.indexOf('please select payment account')>-1){out.screen='payment';var pe=payTarget();if(pe&&cfg.now-(st.lastPay||0)>850){st.lastPay=cfg.now;out.clicked=tap(pe);out.pay=out.clicked;}return JSON.stringify(out);}"
-                + "var buttons=buyButtons();out.targets=buttons.length;"
-                + "for(var i=0;i<buttons.length;i++){var btn=buttons[i],row=rowFor(btn),txt=row.innerText||'',amt=money(txt);if(!amt)continue;out.amounts++;var inRange=cfg.min===cfg.max?amt===cfg.min:amt>=cfg.min&&amt<=cfg.max;if(!inRange)continue;var rew=reward(txt),profit=amt>0&&rew>0?(rew/amt)*100:0;if(rew>0&&profit+0.0001<cfg.minProfit)continue;if(money(row.innerText||'')!==amt||!vis(btn))continue;out.fit=true;out.amount=amt;out.reward=rew;out.profit=profit;if(cfg.now-(st.lastBuy||0)>180){st.lastBuy=cfg.now;out.clicked=tap(btn);out.screen='buy';}return JSON.stringify(out);}"
+                + "function payTarget(c){var nodes=all('button,[role=button],.van-button,.adm-button,a,div'),best=null,bestY=999999;c=c||{};for(var i=0;i<nodes.length;i++){var e=nodes[i];if(!vis(e))continue;var r=e.getBoundingClientRect(),t=n(e.innerText||e.textContent||e.getAttribute('aria-label')||'');if(r.top<(w.innerHeight||9999)*0.13||r.height<28||r.height>140||r.width<(w.innerWidth||r.width)*0.45)continue;if(!t||/select method|please select|payment account|selected platform|otherwise|will fail|100%|use another account/.test(t))continue;var ok=c.pay==='AUTO'?(/[0-9]{6,}|@|phone\\s*pe|phonepe|super|money|airtel|free\\s*charge|freecharge/.test(t)):pmatch(t,c.pay);if(ok&&r.top<bestY){best=e;bestY=r.top;}}return best;}"
                 + "function tab(label){var nodes=all('button,[role=button],.van-tab,div,span,a');for(var i=0;i<nodes.length;i++){var e=nodes[i];if(!vis(e))continue;var r=e.getBoundingClientRect(),t=n(e.innerText||e.textContent||'');if(t===label.toLowerCase()&&r.top<(w.innerHeight||9999)*0.36&&r.left<(w.innerWidth||9999)*0.65){return tap(e);}}return false;}"
-                + "if(cfg.now-(st.lastTab||0)>1000){var label=st.tab%2===0?'Large':'Default';if(tab(label)){st.tab++;st.lastTab=cfg.now;out.tab=true;}}"
-                + "}catch(e){out.error=String(e&&e.message||e);}"
-                + "return JSON.stringify(out);"
+                + "bot.scan=function(force){var cfg=this.cfg||{};if(!cfg.running)return;var now=Date.now();if(!force&&now-this.scanLast<(cfg.scanMs||100))return;this.scanLast=now;var out={mode:'dom',screen:'',clicked:false,fit:false,amount:0,reward:0,profit:0,amounts:0,targets:0,tab:false,pay:false,warning:false};try{var page=String(d.body&&d.body.innerText||'').toLowerCase().replace(/\\s+/g,' ');if(/customer service|contact support|too frequent|frequent operation|risk|abnormal/.test(page)){out.warning=true;this.send(out,true);return;}if(page.indexOf('select method payment')>-1||page.indexOf('please select payment account')>-1){out.screen='payment';var pe=payTarget(cfg);if(pe&&now-(this.lastPay||0)>850){this.lastPay=now;out.clicked=tap(pe);out.pay=out.clicked;}this.send(out,true);return;}var buttons=buyButtons();out.targets=buttons.length;for(var i=0;i<buttons.length;i++){var btn=buttons[i],row=rowFor(btn),txt=row.innerText||'',amt=money(txt);if(!amt)continue;out.amounts++;var inRange=cfg.min===cfg.max?amt===cfg.min:amt>=cfg.min&&amt<=cfg.max;if(!inRange)continue;var rew=reward(txt),profit=amt>0&&rew>0?(rew/amt)*100:0;if(rew>0&&profit+0.0001<(cfg.minProfit||0))continue;if(money(row.innerText||'')!==amt||!vis(btn))continue;out.fit=true;out.amount=amt;out.reward=rew;out.profit=profit;if(now-(this.lastBuy||0)>(cfg.cooldownMs||160)){this.lastBuy=now;this.buyAttempts++;out.clicked=tap(btn);out.screen='buy';}this.send(out,true);return;}if(now-(this.lastTab||0)>1000){var label=this.tab%2===0?'Large':'Default';if(tab(label)){this.tab++;this.lastTab=now;out.tab=true;}}this.send(out,false);}catch(e){out.error=String(e&&e.message||e);this.send(out,true);}};"
+                + "w.__arbSmartAgent=bot;bot.timer=w.setInterval(function(){bot.scan(false);},cfg.scanMs||100);try{bot.observer=new MutationObserver(function(){bot.scan(true);});bot.observer.observe(b,{childList:true,subtree:true,characterData:true});}catch(_){ }bot.scan(true);return JSON.stringify({mode:'agent',ready:true,installed:true});"
+                + "}catch(e){return JSON.stringify({mode:'agent',missing:true,error:String(e&&e.message||e)});}"
                 + "})()";
     }
 
@@ -940,6 +974,17 @@ public class MainActivity extends Activity {
             String raw = decodeJsResult(encoded);
             if (raw.length() == 0) return;
             JSONObject json = new JSONObject(raw);
+            String mode = json.optString("mode", "");
+            if ("agent".equals(mode)) {
+                if (json.optBoolean("missing", false)) {
+                    domAgentStarted = false;
+                } else if (json.optBoolean("ready", false)) {
+                    domAgentStarted = true;
+                    if (statusText != null && running) statusText.setText("DOM Ready");
+                }
+                return;
+            }
+            domAgentStarted = true;
             if (json.optBoolean("warning", false)) {
                 pendingHit = null;
                 pendingHitMs = 0L;
@@ -994,6 +1039,11 @@ public class MainActivity extends Activity {
             return new JSONArray("[" + value + "]").getString(0);
         }
         return value;
+    }
+
+    private void handleDomAgentMessage(String json) {
+        if (!active || !running || json == null || json.length() == 0) return;
+        handleDomResult(json);
     }
 
     private void runVisualScan() {
@@ -1791,6 +1841,13 @@ public class MainActivity extends Activity {
 
     private void toast(String message) {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+    }
+
+    private class BotBridge {
+        @JavascriptInterface
+        public void postMessage(String json) {
+            handler.post(() -> handleDomAgentMessage(json));
+        }
     }
 
     private static class OcrItem {
